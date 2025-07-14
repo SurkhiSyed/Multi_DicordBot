@@ -108,7 +108,7 @@ def main():
     model_id = "bigscience/bloomz-560m"
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash-latest",
-        google_api_key="AIzaSyBQvlFxHIpCS94sALHlsy1mJakaio6Srqo"
+        google_api_key=os.getenv("GOOGLE_API_KEY")
     )
     response = llm.invoke(prompt)
     print("Response:", response)
