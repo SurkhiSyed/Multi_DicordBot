@@ -14,7 +14,7 @@ module.exports = {
         await interaction.deferReply(); // Show "thinking..." in Discord
 
         try {
-            const response = await fetch('http://localhost:5000/api/rag', {
+            const response = await fetch('http://localhost:8000/api/rag', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message: question })

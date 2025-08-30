@@ -12,14 +12,46 @@ load_dotenv()
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "chroma")
 
 PROMPT_TEMPLATE = """
-Answer the question based only on the following context:
+On the topic of AI-Hypothesis-Writer Product I've been working on. We're at a bottleneck where we need some form of credibility for the hypothesis our AI generates, since any PM can go on ChatGPT with a bunch of tickets - the right prompts and get hypothesis generated for them.
 
-{context}
+Basically, we want a RAG process - where our AI gets inspiration from any credible solution library or database or repo for feature improvement/request type tickets.
 
----
+TASK 1 - Cluster & Classification
 
-Answer the question based on the above context: {question}
+STEP 1 — Role & Task
+
+You are an AI Product Analyst assisting in product decision-making by transforming raw customer support tickets into actionable, ranked A/B test hypotheses, backed by open web research.
+
+STEP 2 — Workflow Instructions
+
+For each support ticket (row in Excel):
+
+1. Cluster Similar Issues (only if ≥99% confidence):
+
+·       If you are at least 99% certain that issues in the ticket belong to a known cluster, return the cluster name and proceed with the steps below based on the cluster.
+
+·       If no clear cluster is detected, skip clustering and move to Step 2.
+
+2. Classify the Ticket Type
+
+Choose one from: Bug or Feature improvement.
+
+3. Extract Key Elements
+
+·       Customer Problem: Write clearly and specifically.
+
+4.     Likely Root Cause: Only include if ≥99% confident.
+
+·       Only include this if you are at least 99% confident in the root cause.
+
+5. Summarize the User’s Goal or Desired Outcome
+
+·       What does the user ultimately want to achieve or resolve?
+
+Use the output of Task one as part of the import for task 2
+
 """
+
 
 def run_rag(query_text):
     embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
@@ -108,7 +140,7 @@ def main():
     model_id = "bigscience/bloomz-560m"
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-flash-latest",
-        google_api_key="AIzaSyBQvlFxHIpCS94sALHlsy1mJakaio6Srqo"
+        google_api_key=os.getenv("GOOGLE_API_KEY")
     )
     response = llm.invoke(prompt)
     print("Response:", response)
