@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import supabase from '../helper/supabaseClient'
+import { Navigate } from 'react-router-dom'
+
 
 // Icons (keep all your existing icons)
 const SearchIcon = ({ className = "w-5 h-5" }) => (
@@ -160,10 +162,18 @@ function Home() {
         linkedin_username: searchConfig.username,
         linkedin_password: searchConfig.password,
         num_jobs: searchConfig.numJobs,
+        searchTitle: searchConfig.searchTitle,  // Pass search title
+        location: searchConfig.location,        // Pass location
         user_id: user.id
       };
 
-      console.log('📤 Making request to /api/jobs');
+      console.log('📤 Making request to /api/jobs with:', {
+        linkedin_username: requestBody.linkedin_username,
+        num_jobs: requestBody.num_jobs,
+        searchTitle: requestBody.searchTitle,
+        location: requestBody.location,
+        user_id: requestBody.user_id.slice(0, 8) + '...'
+      });
 
       const response = await fetch(`http://localhost:8000/api/jobs`, {
         method: 'POST',
@@ -184,7 +194,7 @@ function Home() {
         console.log(`✅ Set ${data.jobs.length} jobs in state`);
         
         if (data.database) {
-          alert(`Scraping completed!\nScraped: ${data.total_jobs} jobs\nSaved to DB: ${data.database.saved} new jobs\nDuplicates: ${data.database.duplicates}`);
+          alert(`Scraping completed!\nFound: ${data.total_jobs} new jobs\nSaved to DB: ${data.database.saved} jobs\nDuplicates skipped: ${data.database.duplicates}`);
         }
         await fetchUserJobs(1); // Refresh user jobs
       } else {
@@ -261,7 +271,7 @@ function Home() {
                   onClick={handleLogout}
                   className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
                 >
-                  <LogoutIcon className="w-4 h-4" />
+                  <LogoutIcon className="w-4 h-4"/>
                   Logout
                 </button>
               </div>

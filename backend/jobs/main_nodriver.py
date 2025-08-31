@@ -2,6 +2,7 @@ import asyncio
 import json
 import csv
 import os
+import urllib.parse
 from typing import List
 from dotenv import load_dotenv
 import nodriver as uc
@@ -21,16 +22,12 @@ class NoDriverLinkedInScraper:
         """Setup nodriver browser with authentication"""
         print("🔧 Setting up browser...")
         
-        # Remove proxy for better reliability, add it back if needed
         browser_args = [
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
             "--no-sandbox",
             "--disable-gpu",
         ]
-        
-        # Only add proxy if you really need it
-        # browser_args.append(f"--proxy-server={'rp.proxyscrape.com:6060'}")
         
         self.browser = await uc.start(
             browser_args=browser_args,
@@ -102,13 +99,27 @@ class NoDriverLinkedInScraper:
             print(f"❌ Error during login: {e}")
             return False
     
-    async def scrape_jobs(self, keywords: str = "intern", max_pages: int = 8):
+    async def scrape_jobs(self, keywords: str = "intern", location: str = "", max_pages: int = 8):
         """Scrape LinkedIn jobs after authentication"""
-        print(f"🔍 Starting to scrape LinkedIn jobs for '{keywords}'...")
+        print(f"🔍 Starting to scrape LinkedIn jobs for '{keywords}' in '{location or 'Any location'}'...")
         
         for page in range(max_pages):
             start = page * 7  # Use 7-job increments since that's what we consistently get
-            url = f"https://www.linkedin.com/jobs/search/?keywords={keywords}&start={start}"
+            
+            # Build URL with proper encoding
+            base_url = "https://www.linkedin.com/jobs/search/"
+            params = {
+                "keywords": keywords,
+                "start": str(start)
+            }
+            
+            # Add location if provided
+            if location.strip():
+                params["location"] = location.strip()
+                
+            # Build the query string
+            query_string = urllib.parse.urlencode(params)
+            url = f"{base_url}?{query_string}"
             
             print(f"📄 Scraping page {page + 1}: {url}")
             
@@ -244,7 +255,7 @@ class NoDriverLinkedInScraper:
             self.browser = None
             self.main_tab = None
 
-async def main(linkedin_username: str = None, linkedin_password: str = None):
+async def main(linkedin_username: str = None, linkedin_password: str = None, location: str = ""):
     scraper = NoDriverLinkedInScraper()
 
     try:
@@ -255,8 +266,8 @@ async def main(linkedin_username: str = None, linkedin_password: str = None):
         login_success = await scraper.login_to_linkedin(linkedin_username, linkedin_password)
         
         if login_success:
-            # Scrape jobs - using 8 pages with 7-job increments to get ~56 jobs
-            jobs = await scraper.scrape_jobs(keywords="intern", max_pages=8)
+            # Scrape jobs with location
+            jobs = await scraper.scrape_jobs(keywords="intern", location=location, max_pages=8)
             
             # Save results
             scraper.save_to_csv()

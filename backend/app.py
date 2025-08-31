@@ -52,6 +52,20 @@ else:
     print("❌ No Supabase keys found in environment variables")
     supabase = None
 
+def get_existing_job_links(user_id: str) -> set:
+    """Get all existing job application links for a user"""
+    if not supabase or not user_id:
+        return set()
+    
+    try:
+        result = supabase.table("user_jobs").select("application_link").eq("user_id", user_id).execute()
+        existing_links = {job['application_link'] for job in result.data if job.get('application_link')}
+        print(f"📋 Found {len(existing_links)} existing job links for user")
+        return existing_links
+    except Exception as e:
+        print(f"❌ Error fetching existing job links: {e}")
+        return set()
+
 def save_jobs_to_supabase(user_id: str, jobs_data: list, source: str = 'linkedin'):
     """
     Save jobs to Supabase database, avoiding duplicates
@@ -70,8 +84,19 @@ def save_jobs_to_supabase(user_id: str, jobs_data: list, source: str = 'linkedin
     
     print(f"💾 Attempting to save {len(jobs_data)} jobs to Supabase for user {user_id[:8]}...")
     
+    # Get existing job links to avoid duplicates
+    existing_links = get_existing_job_links(user_id)
+    
     for job in jobs_data:
         try:
+            application_link = job.get("application_link", "")
+            
+            # Check if job already exists
+            if application_link in existing_links:
+                print(f"🔄 Job already exists: {job.get('name', 'Unknown')} at {job.get('company', 'Unknown')}")
+                duplicate_count += 1
+                continue
+            
             # Prepare job data for database
             job_record = {
                 "user_id": user_id,
@@ -81,18 +106,10 @@ def save_jobs_to_supabase(user_id: str, jobs_data: list, source: str = 'linkedin
                 "location_type": job.get("location_type", "")[:50] if job.get("location_type") else None,
                 "job_type": job.get("job_type", "")[:100] if job.get("job_type") else None,
                 "posting_date": job.get("posting_date", "")[:100] if job.get("posting_date") else None,
-                "application_link": job.get("application_link", ""),
+                "application_link": application_link,
                 "description": job.get("description", "") if job.get("description") else None,
                 "source": source
             }
-            
-            # Check if job already exists for this user (by application_link)
-            existing_job = supabase.table("user_jobs").select("id").eq("user_id", user_id).eq("application_link", job_record["application_link"]).execute()
-            
-            if existing_job.data:
-                print(f"🔄 Job already exists: {job_record['job_name']} at {job_record['company']}")
-                duplicate_count += 1
-                continue
             
             # Insert the job
             result = supabase.table("user_jobs").insert(job_record).execute()
@@ -100,6 +117,8 @@ def save_jobs_to_supabase(user_id: str, jobs_data: list, source: str = 'linkedin
             if result.data:
                 print(f"✅ Saved job: {job_record['job_name']} at {job_record['company']}")
                 saved_count += 1
+                # Add to existing links set to prevent duplicates in the same batch
+                existing_links.add(application_link)
             else:
                 print(f"❌ Failed to save job: {job_record['job_name']} at {job_record['company']}")
                 error_count += 1
@@ -153,8 +172,8 @@ def debug():
         "google_api_key": os.getenv("GOOGLE_API_KEY")
     })
 
-async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: str, num_jobs: int = 56):
-    """Async wrapper for the LinkedIn scraper"""
+async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: str, num_jobs: int = 56, search_title: str = "intern", location: str = "", user_id: str = None):
+    """Async wrapper for the LinkedIn scraper with smart duplicate detection"""
     scraper = NoDriverLinkedInScraper()
     jobs_data = []  # Initialize outside try block
     
@@ -168,24 +187,73 @@ async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: 
         if not login_success:
             return {"success": False, "error": "Failed to login to LinkedIn", "jobs": []}
         
-        # Calculate max_pages based on num_jobs (7 jobs per page)
-        max_pages = max(1, (num_jobs + 6) // 7)  # Round up division
+        # Calculate initial max_pages based on num_jobs (7 jobs per page)
+        initial_max_pages = max(1, (num_jobs + 6) // 7)  # Round up division
         
-        # Scrape jobs
-        jobs = await scraper.scrape_jobs(keywords="intern", max_pages=max_pages)
+        # Get existing job links to check for duplicates
+        existing_links = get_existing_job_links(user_id) if user_id else set()
         
-        # Convert jobs to dict format for JSON response
-        for job in jobs:
-            job_dict = job.model_dump()
-            jobs_data.append(job_dict)
+        max_pages = initial_max_pages
+        total_new_jobs = 0
+        page_attempts = 0
+        max_attempts = initial_max_pages * 3  # Don't search forever
         
-        print(f"✅ Successfully scraped {len(jobs_data)} jobs before cleanup")
+        print(f"🎯 Target: {num_jobs} jobs, Initial pages: {initial_max_pages}, Existing jobs: {len(existing_links)}")
+        
+        while total_new_jobs < num_jobs and page_attempts < max_attempts:
+            print(f"🔍 Scraping attempt with {max_pages} pages (attempt {page_attempts + 1})")
+            
+            # Clear previous jobs for this attempt
+            scraper.jobs = []
+            
+            # Scrape jobs with location support
+            jobs = await scraper.scrape_jobs(keywords=search_title, location=location, max_pages=max_pages)
+            
+            # Count new jobs (not in existing database)
+            new_jobs = []
+            duplicate_count = 0
+            
+            for job in jobs:
+                job_dict = job.model_dump()
+                application_link = job_dict.get("application_link", "")
+                
+                if application_link not in existing_links:
+                    new_jobs.append(job_dict)
+                    existing_links.add(application_link)  # Add to set to prevent duplicates in same batch
+                else:
+                    duplicate_count += 1
+            
+            total_new_jobs = len(new_jobs)
+            
+            print(f"📊 Found {len(jobs)} total jobs, {total_new_jobs} new jobs, {duplicate_count} duplicates")
+            
+            # If we have enough new jobs, we're done
+            if total_new_jobs >= num_jobs:
+                jobs_data = new_jobs[:num_jobs]  # Take only the requested number
+                break
+            
+            # If we found mostly duplicates and not enough new jobs, increase search scope
+            duplicate_ratio = duplicate_count / max(len(jobs), 1)
+            
+            if duplicate_ratio > 0.7 and total_new_jobs < num_jobs * 0.5:  # More than 70% duplicates
+                max_pages = min(max_pages + 3, 20)  # Increase pages but cap at 20
+                print(f"🔄 High duplicate ratio ({duplicate_ratio:.1%}), increasing search to {max_pages} pages")
+            else:
+                # Not enough jobs found, but not due to duplicates
+                jobs_data = new_jobs
+                break
+            
+            page_attempts += 1
+        
+        if not jobs_data:
+            jobs_data = []
+        
+        print(f"✅ Successfully scraped {len(jobs_data)} new jobs after {page_attempts + 1} attempts")
         
     except Exception as e:
         print(f"❌ Error during scraping: {str(e)}")
         import traceback
         traceback.print_exc()
-        # Don't return here - we want to try cleanup and return whatever we got
         
     finally:
         # Clean up browser (this might fail, but we still want to return any jobs we got)
@@ -198,14 +266,14 @@ async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: 
     if jobs_data:
         return {
             "success": True,
-            "message": f"Successfully scraped {len(jobs_data)} jobs",
+            "message": f"Successfully scraped {len(jobs_data)} new jobs",
             "total_jobs": len(jobs_data),
             "jobs": jobs_data
         }
     else:
         return {
             "success": False,
-            "error": "No jobs were scraped",
+            "error": "No new jobs were found",
             "jobs": []
         }
 
@@ -226,9 +294,11 @@ def get_jobs():
         linkedin_username = data.get('linkedin_username', '')
         linkedin_password = data.get('linkedin_password', '')
         num_jobs = data.get('num_jobs', 56)  # Default to 56 jobs (8 pages)
+        search_title = data.get('searchTitle', 'intern')  # Get search title from frontend
+        location = data.get('location', '')  # Get location from frontend
         user_id = data.get('user_id', '')  # Get user_id from request
 
-        print(f"📝 Request data: username={linkedin_username}, num_jobs={num_jobs}, user_id={user_id[:8] if user_id else 'None'}...")
+        print(f"📝 Request data: username={linkedin_username}, num_jobs={num_jobs}, search_title={search_title}, location={location}, user_id={user_id[:8] if user_id else 'None'}...")
 
         # Validate inputs
         if not linkedin_username or not linkedin_password:
@@ -268,10 +338,17 @@ def get_jobs():
         except (ValueError, TypeError):
             num_jobs = 56  # Default value
         
-        print(f"🔍 Starting scraping: {num_jobs} jobs for user: {user_id[:8]}...")
+        print(f"🔍 Starting scraping: {num_jobs} jobs for '{search_title}' in '{location or 'Any location'}' for user: {user_id[:8]}...")
         
-        # Run the async scraper in the Flask context
-        scraper_result = asyncio.run(scrape_linkedin_jobs_async(linkedin_username, linkedin_password, num_jobs))
+        # Run the async scraper with all parameters
+        scraper_result = asyncio.run(scrape_linkedin_jobs_async(
+            linkedin_username=linkedin_username, 
+            linkedin_password=linkedin_password, 
+            num_jobs=num_jobs,
+            search_title=search_title,
+            location=location,
+            user_id=user_id
+        ))
         
         if not scraper_result.get("success"):
             print(f"❌ Scraper failed: {scraper_result.get('error', 'Unknown error')}")
@@ -286,7 +363,7 @@ def get_jobs():
         # Prepare response with both scraping and database results
         response = {
             "success": True,
-            "message": f"Successfully scraped {len(jobs_data)} jobs",
+            "message": f"Successfully scraped {len(jobs_data)} new jobs",
             "total_jobs": len(jobs_data),
             "jobs": jobs_data,
             "database": {
