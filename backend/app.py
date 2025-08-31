@@ -1,14 +1,131 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from rag.rag_model import run_rag
 import os
 import asyncio
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from jobs.main_nodriver import NoDriverLinkedInScraper
+from supabase import create_client, Client
+from dotenv import load_dotenv
+import uuid
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
 
+# Enable CORS for all routes with more permissive settings
+CORS(app, 
+     origins=["http://localhost:3000", "http://localhost:5173", "http://192.168.112.1:3000", "http://127.0.0.1:3000"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+     supports_credentials=True)
+
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "rag", "chroma")
+
+# Initialize Supabase client with Service Role Key (bypasses RLS)
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # Use service role key
+supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")  # Keep for fallback
+
+if not supabase_url:
+    print("⚠️ Warning: SUPABASE_URL not found in environment variables")
+    supabase: Client = None
+elif supabase_service_key:
+    try:
+        # Use service role key for backend operations (bypasses RLS)
+        supabase: Client = create_client(supabase_url, supabase_service_key)
+        print("✅ Supabase client initialized with Service Role Key (RLS bypassed)")
+    except Exception as e:
+        print(f"❌ Failed to initialize Supabase client with service key: {e}")
+        supabase = None
+elif supabase_anon_key:
+    try:
+        # Fallback to anon key (will have RLS issues)
+        supabase: Client = create_client(supabase_url, supabase_anon_key)
+        print("⚠️ Supabase client initialized with Anon Key (RLS may block operations)")
+    except Exception as e:
+        print(f"❌ Failed to initialize Supabase client: {e}")
+        supabase = None
+else:
+    print("❌ No Supabase keys found in environment variables")
+    supabase = None
+
+def save_jobs_to_supabase(user_id: str, jobs_data: list, source: str = 'linkedin'):
+    """
+    Save jobs to Supabase database, avoiding duplicates
+    """
+    if not supabase:
+        print("⚠️ Supabase client not available, skipping database save")
+        return {"saved": 0, "duplicates": 0, "errors": 0}
+    
+    if not user_id:
+        print("❌ No user_id provided, cannot save jobs")
+        return {"saved": 0, "duplicates": 0, "errors": 0}
+    
+    saved_count = 0
+    duplicate_count = 0
+    error_count = 0
+    
+    print(f"💾 Attempting to save {len(jobs_data)} jobs to Supabase for user {user_id[:8]}...")
+    
+    for job in jobs_data:
+        try:
+            # Prepare job data for database
+            job_record = {
+                "user_id": user_id,
+                "job_name": job.get("name", "")[:500],  # Truncate to match VARCHAR(500)
+                "company": job.get("company", "")[:200],  # Truncate to match VARCHAR(200)
+                "location": job.get("location", "")[:200] if job.get("location") else None,
+                "location_type": job.get("location_type", "")[:50] if job.get("location_type") else None,
+                "job_type": job.get("job_type", "")[:100] if job.get("job_type") else None,
+                "posting_date": job.get("posting_date", "")[:100] if job.get("posting_date") else None,
+                "application_link": job.get("application_link", ""),
+                "description": job.get("description", "") if job.get("description") else None,
+                "source": source
+            }
+            
+            # Check if job already exists for this user (by application_link)
+            existing_job = supabase.table("user_jobs").select("id").eq("user_id", user_id).eq("application_link", job_record["application_link"]).execute()
+            
+            if existing_job.data:
+                print(f"🔄 Job already exists: {job_record['job_name']} at {job_record['company']}")
+                duplicate_count += 1
+                continue
+            
+            # Insert the job
+            result = supabase.table("user_jobs").insert(job_record).execute()
+            
+            if result.data:
+                print(f"✅ Saved job: {job_record['job_name']} at {job_record['company']}")
+                saved_count += 1
+            else:
+                print(f"❌ Failed to save job: {job_record['job_name']} at {job_record['company']}")
+                error_count += 1
+                
+        except Exception as e:
+            print(f"❌ Error saving job '{job.get('name', 'Unknown')}': {str(e)}")
+            error_count += 1
+            continue
+    
+    print(f"📊 Database save summary: {saved_count} saved, {duplicate_count} duplicates, {error_count} errors")
+    
+    return {
+        "saved": saved_count,
+        "duplicates": duplicate_count,
+        "errors": error_count
+    }
+
+# Add explicit OPTIONS handler for /api/jobs
+@app.route('/api/jobs', methods=['OPTIONS'])
+def handle_jobs_options():
+    """Handle preflight OPTIONS request for /api/jobs"""
+    response = jsonify({})
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+    return response
 
 @app.route('/api/echo', methods=['POST'])
 def echo():
@@ -24,7 +141,6 @@ def rag():
     result = run_rag(message)
     print(f"RAG result: {result}")
     return jsonify(result)
-
 
 @app.route('/api/debug', methods=['GET'])
 def debug():
@@ -67,6 +183,8 @@ async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: 
         
     except Exception as e:
         print(f"❌ Error during scraping: {str(e)}")
+        import traceback
+        traceback.print_exc()
         # Don't return here - we want to try cleanup and return whatever we got
         
     finally:
@@ -94,15 +212,49 @@ async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: 
 @app.route('/api/jobs', methods=['POST'])
 def get_jobs():
     try:
+        print(f"🔍 /api/jobs POST endpoint called")
+        
         data = request.json
+        if not data:
+            print("❌ No JSON data received")
+            return jsonify({
+                "success": False,
+                "error": "No data received",
+                "jobs": []
+            }), 400
+        
         linkedin_username = data.get('linkedin_username', '')
         linkedin_password = data.get('linkedin_password', '')
         num_jobs = data.get('num_jobs', 56)  # Default to 56 jobs (8 pages)
+        user_id = data.get('user_id', '')  # Get user_id from request
+
+        print(f"📝 Request data: username={linkedin_username}, num_jobs={num_jobs}, user_id={user_id[:8] if user_id else 'None'}...")
 
         # Validate inputs
         if not linkedin_username or not linkedin_password:
+            print("❌ Missing LinkedIn credentials")
             return jsonify({
+                "success": False,
                 "error": "LinkedIn username and password are required",
+                "jobs": []
+            }), 400
+        
+        if not user_id:
+            print("❌ Missing user_id")
+            return jsonify({
+                "success": False,
+                "error": "user_id is required for saving jobs to database",
+                "jobs": []
+            }), 400
+        
+        # Validate user_id format (should be UUID)
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            print(f"❌ Invalid user_id format: {user_id}")
+            return jsonify({
+                "success": False,
+                "error": "user_id must be a valid UUID",
                 "jobs": []
             }), 400
         
@@ -116,67 +268,40 @@ def get_jobs():
         except (ValueError, TypeError):
             num_jobs = 56  # Default value
         
-        print(f"🔍 Scraping request: {num_jobs} jobs for user: {linkedin_username}")
+        print(f"🔍 Starting scraping: {num_jobs} jobs for user: {user_id[:8]}...")
         
         # Run the async scraper in the Flask context
-        result = asyncio.run(scrape_linkedin_jobs_async(linkedin_username, linkedin_password, num_jobs))
+        scraper_result = asyncio.run(scrape_linkedin_jobs_async(linkedin_username, linkedin_password, num_jobs))
         
-        return jsonify(result)
+        if not scraper_result.get("success"):
+            print(f"❌ Scraper failed: {scraper_result.get('error', 'Unknown error')}")
+            return jsonify(scraper_result), 500
+        
+        jobs_data = scraper_result.get("jobs", [])
+        print(f"✅ Scraper returned {len(jobs_data)} jobs")
+        
+        # Save jobs to Supabase database
+        db_result = save_jobs_to_supabase(user_id, jobs_data, source='linkedin')
+        
+        # Prepare response with both scraping and database results
+        response = {
+            "success": True,
+            "message": f"Successfully scraped {len(jobs_data)} jobs",
+            "total_jobs": len(jobs_data),
+            "jobs": jobs_data,
+            "database": {
+                "saved": db_result["saved"],
+                "duplicates": db_result["duplicates"],
+                "errors": db_result["errors"],
+                "message": f"Saved {db_result['saved']} new jobs, {db_result['duplicates']} were duplicates"
+            }
+        }
+        
+        print(f"✅ Returning successful response with {len(jobs_data)} jobs")
+        return jsonify(response)
         
     except Exception as e:
         print(f"❌ Error in /api/jobs endpoint: {e}")
-        return jsonify({
-            "error": f"Server error: {str(e)}",
-            "jobs": []
-        }), 500
-
-@app.route('/api/indeed-jobs', methods=['POST'])
-def get_indeed_jobs():
-    """Scrape Indeed jobs using Google OAuth login"""
-    try:
-        data = request.get_json()
-        
-        # Extract parameters
-        gmail_email = data.get('gmail_email')
-        gmail_password = data.get('gmail_password')
-        keywords = data.get('keywords', 'intern')
-        location = data.get('location', '')
-        num_jobs = data.get('num_jobs', 56)
-        
-        # Validate required fields
-        if not gmail_email or not gmail_password:
-            return jsonify({
-                "success": False,
-                "error": "Gmail email and password are required",
-                "jobs": []
-            }), 400
-        
-        # Calculate pages (Indeed typically shows 10 jobs per page)
-        max_pages = max(1, min(20, (num_jobs + 9) // 10))  # Round up, max 20 pages
-        
-        # Import and run the Indeed scraper
-        from jobs.main2_nodriver import main as indeed_main
-        
-        # Run the async scraper
-        scraped_jobs = asyncio.run(indeed_main(
-            gmail_email=gmail_email,
-            gmail_password=gmail_password,
-            keywords=keywords,
-            location=location
-        ))
-        
-        # Convert Pydantic models to dicts for JSON response
-        jobs_data = [job.model_dump() for job in scraped_jobs]
-        
-        return jsonify({
-            "success": True,
-            "message": f"Successfully scraped {len(jobs_data)} Indeed jobs",
-            "total_jobs": len(jobs_data),
-            "jobs": jobs_data
-        })
-        
-    except Exception as e:
-        print(f"❌ Error in /api/indeed-jobs endpoint: {e}")
         import traceback
         traceback.print_exc()
         
@@ -186,13 +311,128 @@ def get_indeed_jobs():
             "jobs": []
         }), 500
 
+@app.route('/api/user-jobs/<user_id>/status', methods=['PUT'])
+def update_job_status(user_id):
+    """Update the application status of a specific job"""
+    try:
+        print(f"🔄 /api/user-jobs/{user_id[:8]}/status endpoint called")
+        
+        data = request.json
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data received"
+            }), 400
+        
+        job_id = data.get('job_id')
+        new_status = data.get('status')
+        
+        if not job_id or not new_status:
+            return jsonify({
+                "success": False,
+                "error": "job_id and status are required"
+            }), 400
+        
+        # Validate status
+        valid_statuses = ['not_applied', 'applied', 'rejected', 'interview', 'offer']
+        if new_status not in valid_statuses:
+            return jsonify({
+                "success": False,
+                "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            }), 400
+        
+        if not supabase:
+            return jsonify({
+                "success": False,
+                "error": "Database not available"
+            }), 500
+        
+        # Update the job status
+        result = supabase.table("user_jobs").update({
+            "application_status": new_status,
+            "status_updated_at": "now()"
+        }).eq("id", job_id).eq("user_id", user_id).execute()
+        
+        if result.data:
+            print(f"✅ Updated job {job_id} status to {new_status}")
+            return jsonify({
+                "success": True,
+                "message": f"Job status updated to {new_status}"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to update job status"
+            }), 500
+        
+    except Exception as e:
+        print(f"❌ Error updating job status: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Server error: {str(e)}"
+        }), 500
+
+@app.route('/api/user-jobs/<user_id>', methods=['GET'])
+def get_user_jobs(user_id):
+    """Get all jobs for a specific user from the database"""
+    try:
+        print(f"📚 /api/user-jobs endpoint called for user: {user_id[:8]}...")
+        
+        if not supabase:
+            print("❌ Supabase client not available")
+            return jsonify({
+                "success": False,
+                "error": "Database not available",
+                "jobs": []
+            }), 500
+        
+        # Validate user_id format
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            print(f"❌ Invalid user_id format: {user_id}")
+            return jsonify({
+                "success": False,
+                "error": "Invalid user_id format",
+                "jobs": []
+            }), 400
+        
+        # Get pagination parameters
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 100))  # Increased default limit
+        offset = (page - 1) * limit
+        
+        # Get jobs from database
+        result = supabase.table("user_jobs").select("*").eq("user_id", user_id).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+        
+        # Get total count
+        count_result = supabase.table("user_jobs").select("id", count="exact").eq("user_id", user_id).execute()
+        total_jobs = count_result.count
+        
+        print(f"✅ Found {len(result.data)} jobs for user (page {page}, total: {total_jobs})")
+        
+        return jsonify({
+            "success": True,
+            "jobs": result.data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": total_jobs,
+                "total_pages": (total_jobs + limit - 1) // limit
+            }
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in /api/user-jobs endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": f"Server error: {str(e)}",
+            "jobs": []
+        }), 500
 
 if __name__ == '__main__':
-    # For testing without starting the server
-    # with app.app_context():
-    #     result = get_jobs()
-    #     print(result)
-
     # Start the Flask server
-    app.run(port=8000, debug=True)
+    app.run(host='0.0.0.0', port=8000, debug=True)
 
