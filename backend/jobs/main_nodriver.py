@@ -16,14 +16,16 @@ from jobs.linkedin_parser import LinkedInJobParser, extract_description_from_job
 load_dotenv()
 
 class NoDriverLinkedInScraper:
-    def __init__(self):
+    def __init__(self, headless: bool = True):  # Add headless parameter
         self.jobs: List[Linkedin] = []
         self.browser = None
         self.main_tab = None
+        self.headless = headless  # Store the headless setting
         
     async def setup_browser(self):
         """Setup nodriver browser with authentication"""
         print("🔧 Setting up browser...")
+        print(f"🖥️ Browser mode: {'Headless (background)' if self.headless else 'Visible'}")
         
         browser_args = [
             "--disable-blink-features=AutomationControlled",
@@ -32,20 +34,28 @@ class NoDriverLinkedInScraper:
             "--disable-gpu",
         ]
         
+        # Add additional headless-specific arguments for better stability
+        if self.headless:
+            browser_args.extend([
+                "--disable-extensions",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-features=TranslateUI",
+                "--disable-ipc-flooding-protection",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ])
+        
         self.browser = await uc.start(
             browser_args=browser_args,
-            headless=False  # Keep visible for debugging
+            headless=self.headless  # Use the configured headless setting
         )
         
         # Get the main tab
         self.main_tab = await self.browser.get("about:blank")
         # NEW: a dedicated tab for job detail pages
         self.detail_tab = await self.browser.get("about:blank")
-        
-        # Setup authentication handlers
-        #self.main_tab.add_handler(uc.cdp.fetch.RequestPaused, self.req_paused)
-        #self.main_tab.add_handler(uc.cdp.fetch.AuthRequired, self.auth_challenge_handler)
-        #await self.main_tab.send(uc.cdp.fetch.enable(handle_auth_requests=True))
         
         print("✅ Browser setup complete")
 
@@ -91,11 +101,16 @@ class NoDriverLinkedInScraper:
                 print("✅ Successfully logged in to LinkedIn")
                 return True
             elif "challenge" in current_url:
-                print("⚠️ LinkedIn security challenge detected")
-                print("👀 Please complete the challenge manually in the browser")
-                # Wait for manual intervention
-                input("Press Enter after completing the challenge...")
-                return True
+                if self.headless:
+                    print("❌ LinkedIn security challenge detected in headless mode")
+                    print("💡 Security challenges require manual intervention - please run with headless=False first")
+                    return False
+                else:
+                    print("⚠️ LinkedIn security challenge detected")
+                    print("👀 Please complete the challenge manually in the browser")
+                    # Wait for manual intervention
+                    input("Press Enter after completing the challenge...")
+                    return True
             else:
                 print("⚠️ Login may have failed, please check manually")
                 return True  # Let's try to continue anyway
@@ -352,8 +367,8 @@ class NoDriverLinkedInScraper:
             # small pacing to be polite
             await asyncio.sleep(0.3)
 
-async def main(linkedin_username: str = None, linkedin_password: str = None, location: str = ""):
-    scraper = NoDriverLinkedInScraper()
+async def main(linkedin_username: str = None, linkedin_password: str = None, location: str = "", headless: bool = True):
+    scraper = NoDriverLinkedInScraper(headless=headless)  # Pass headless parameter
 
     try:
         # Setup browser
@@ -385,4 +400,5 @@ async def main(linkedin_username: str = None, linkedin_password: str = None, loc
         print("🏁 Cleanup completed")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # You can change this to False if you want to see the browser
+    asyncio.run(main(headless=True))

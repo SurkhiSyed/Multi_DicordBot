@@ -1,5 +1,6 @@
 // src/pages/Home.jsx
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom'; // Add this import
 import supabase from '../helper/supabaseClient';
 
 // Icons (unchanged)
@@ -65,17 +66,16 @@ const badge = (label) => (
 );
 
 function Home() {
-  const [jobs, setJobs] = useState([]);                 // scraped jobs (from /api/jobs)
-  const [userJobs, setUserJobs] = useState([]);         // saved jobs (from DB)
+  const navigate = useNavigate(); // Add this hook
+  
+  const [jobs, setJobs] = useState([]);
+  const [userJobs, setUserJobs] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, total: 0, total_pages: 0 });
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingUserJobs, setIsLoadingUserJobs] = useState(false);
   const [user, setUser] = useState(null);
-
-  // track expanded descriptions (recent & saved)
   const [expandedScraped, setExpandedScraped] = useState(() => new Set());
   const [expandedSaved, setExpandedSaved] = useState(() => new Set());
-
   const [searchConfig, setSearchConfig] = useState({
     username: '',
     password: '',
@@ -107,11 +107,24 @@ function Home() {
     setSearchConfig(prev => ({ ...prev, [field]: value }));
   };
 
+  // Update the handleLogout function
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
+      // Clear any local state if needed
+      setUser(null);
+      setJobs([]);
+      setUserJobs([]);
+      setPagination({ page: 1, total: 0, total_pages: 0 });
+      setExpandedScraped(new Set());
+      setExpandedSaved(new Set());
+      
+      // Redirect to login page
+      navigate('/login');
     } catch (err) {
       console.error('Error logging out:', err);
+      // Even if there's an error, still redirect to login
+      navigate('/login');
     }
   };
 
