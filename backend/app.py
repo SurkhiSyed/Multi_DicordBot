@@ -591,6 +591,6 @@ def resume_download(fname):
 
 
 if __name__ == '__main__':
-    # Start the Flask server
-    app.run(host='0.0.0.0', port=8000, debug=True)
-
+    port = int(os.getenv('PORT', '8000'))  # Render sets PORT
+    # turn off debug in prod
+    app.run(host='0.0.0.0', port=port, debug=False)
