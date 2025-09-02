@@ -1,7 +1,8 @@
 // src/pages/Home.jsx
 import React, { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom'; // Add this import
+import { useNavigate } from 'react-router-dom';
 import supabase from '../helper/supabaseClient';
+import { API_URL } from "../api"; // Fixed: added missing slash
 
 // Icons (unchanged)
 const SearchIcon = ({ className = "w-5 h-5" }) => (
@@ -66,7 +67,7 @@ const badge = (label) => (
 );
 
 function Home() {
-  const navigate = useNavigate(); // Add this hook
+  const navigate = useNavigate();
   
   const [jobs, setJobs] = useState([]);
   const [userJobs, setUserJobs] = useState([]);
@@ -107,7 +108,6 @@ function Home() {
     setSearchConfig(prev => ({ ...prev, [field]: value }));
   };
 
-  // Update the handleLogout function
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
@@ -131,7 +131,8 @@ function Home() {
   const handleStatusChange = async (jobId, newStatus) => {
     if (!user?.id) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/user-jobs/${user.id}/status`, {
+      // Fixed: use API_URL instead of hardcoded localhost
+      const res = await fetch(`${API_URL}/api/user-jobs/${user.id}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId, status: newStatus })
@@ -173,7 +174,8 @@ function Home() {
         user_id: user.id,
       };
 
-      const res = await fetch(`http://localhost:8000/api/jobs`, {
+      // Fixed: use API_URL instead of hardcoded localhost
+      const res = await fetch(`${API_URL}/api/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -211,8 +213,9 @@ Duplicates skipped: ${data.database.duplicates}`
     setExpandedSaved(new Set()); // reset expands when page changes
 
     try {
+      // Fixed: use API_URL instead of hardcoded localhost
       const res = await fetch(
-        `http://localhost:8000/api/user-jobs/${user.id}?page=${page}&limit=50`
+        `${API_URL}/api/user-jobs/${user.id}?page=${page}&limit=50`
       );
       const data = await res.json();
       if (data.success) {
@@ -444,7 +447,7 @@ Duplicates skipped: ${data.database.duplicates}`
                 })
               ) : (
                 <div className="p-8 text-center text-gray-500">
-                  No jobs scraped yet. Configure search and click “Search LinkedIn Jobs”.
+                  No jobs scraped yet. Configure search and click "Search LinkedIn Jobs".
                 </div>
               )}
             </div>

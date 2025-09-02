@@ -1,6 +1,7 @@
 // src/pages/Resume.jsx
 import React, { useEffect, useState } from "react";
 import supabase from "../helper/supabaseClient";
+import { API_URL } from "../api"; // Fixed: added missing slash
 
 const Sparkles = (props) => (
   <svg viewBox="0 0 24 24" className={props.className || "w-4 h-4"}>
@@ -17,7 +18,7 @@ export default function Resume() {
   const [useLLM, setUseLLM] = useState(false);
   const [isTuning, setIsTuning] = useState(false);
 
-  const [result, setResult] = useState(null); // { download_url, changed_bullets, removed_bullets }
+  const [result, setResult] = useState(null);
   const [activeJob, setActiveJob] = useState(null);
 
   useEffect(() => {
@@ -37,7 +38,8 @@ export default function Resume() {
     (async () => {
       setIsLoadingJobs(true);
       try {
-        const res = await fetch(`http://localhost:8000/api/user-jobs/${user.id}?page=1&limit=100`);
+        // Replace hardcoded URL with API_URL
+        const res = await fetch(`${API_URL}/api/user-jobs/${user.id}?page=1&limit=100`);
         const data = await res.json();
         if (data.success) setUserJobs(data.jobs || []);
       } catch (e) {
@@ -64,7 +66,8 @@ export default function Resume() {
       fd.append("job_id", job.id);
       fd.append("use_llm", useLLM ? "true" : "false");
 
-      const r = await fetch("http://localhost:8000/api/resume/tune", {
+      // Replace hardcoded URL with API_URL
+      const r = await fetch(`${API_URL}/api/resume/tune`, {
         method: "POST",
         body: fd,
       });
@@ -156,7 +159,7 @@ export default function Resume() {
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">3) Review & Download</h2>
               <a
-                href={`http://localhost:8000${result.download_url}`}
+                href={`${API_URL}${result.download_url}`}
                 className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700"
               >
                 Download tailored .docx
