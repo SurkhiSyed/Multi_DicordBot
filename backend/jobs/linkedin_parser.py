@@ -573,3 +573,35 @@ class LinkedInJobParser:
         # Strategy 5: If nothing else works, return empty string instead of original text
         # This prevents showing mixed text as company name
         return ""
+
+JOB_DESCRIPTION_SELECTORS = [
+    # Modern unified job page
+    'div.show-more-less-html__markup',
+    'div.jobs-description-content__text',
+    # Older/alt layouts
+    'div.jobs-box__html-content',
+    'section.description div', 
+    'div.jobs-description__content',
+]
+
+def extract_description_from_job_html(html: str) -> str:
+    soup = BeautifulSoup(html, 'html.parser')
+    for sel in JOB_DESCRIPTION_SELECTORS:
+        node = soup.select_one(sel)
+        if node and node.get_text(strip=True):
+            # Keep plain text; if you want HTML, return str(node)
+            text = ' '.join(node.stripped_strings)
+            # Light cleanup: collapse spaces & remove “show more” artifacts
+            text = re.sub(r'\s+', ' ', text).strip()
+            text = re.sub(r'(Show more|Show less)$', '', text, flags=re.I).strip()
+            return text
+    # Fallback: try the largest text block on the page
+    candidates = sorted(
+        (n.get_text(" ", strip=True) for n in soup.find_all(['div','section','article'])),
+        key=lambda t: len(t),
+        reverse=True
+    )
+    for c in candidates[:5]:
+        if len(c) > 200:  # heuristically “description-sized”
+            return re.sub(r'\s+', ' ', c).strip()
+    return ""

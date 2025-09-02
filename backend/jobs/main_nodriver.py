@@ -3,12 +3,15 @@ import json
 import csv
 import os
 import urllib.parse
+import inspect
 from typing import List
 from dotenv import load_dotenv
 import nodriver as uc
 from bs4 import BeautifulSoup
 from jobs.model.linkedin import Linkedin
 from jobs.linkedin_parser import LinkedInJobParser
+from random import uniform
+from jobs.linkedin_parser import LinkedInJobParser, extract_description_from_job_html
 
 load_dotenv()
 
@@ -36,11 +39,13 @@ class NoDriverLinkedInScraper:
         
         # Get the main tab
         self.main_tab = await self.browser.get("about:blank")
+        # NEW: a dedicated tab for job detail pages
+        self.detail_tab = await self.browser.get("about:blank")
         
         # Setup authentication handlers
-        self.main_tab.add_handler(uc.cdp.fetch.RequestPaused, self.req_paused)
-        self.main_tab.add_handler(uc.cdp.fetch.AuthRequired, self.auth_challenge_handler)
-        await self.main_tab.send(uc.cdp.fetch.enable(handle_auth_requests=True))
+        #self.main_tab.add_handler(uc.cdp.fetch.RequestPaused, self.req_paused)
+        #self.main_tab.add_handler(uc.cdp.fetch.AuthRequired, self.auth_challenge_handler)
+        #await self.main_tab.send(uc.cdp.fetch.enable(handle_auth_requests=True))
         
         print("✅ Browser setup complete")
 
@@ -179,12 +184,22 @@ class NoDriverLinkedInScraper:
                     f.write(html_content)
                 print(f"💾 Saved HTML to nodriver_debug_page_{page + 1}.html")
                 
-                # Extract jobs from HTML
-                jobs_data = LinkedInJobParser.extract_jobs_from_html(html_content)
-                self.jobs.extend(jobs_data)
-                
-                print(f"✅ Found {len(jobs_data)} jobs on page {page + 1}")
-                
+                # Extract jobs from HTML (pydantic objects)
+                jobs_objs = LinkedInJobParser.extract_jobs_from_html(html_content)
+
+                # Convert to dicts for mutation
+                page_dicts = [j.model_dump() for j in jobs_objs]
+
+                # Enrich (sequential, in dedicated tab)
+                await self._enrich_jobs_with_descriptions(page_dicts)
+
+                # Push enriched descriptions back into models
+                for src, upd in zip(jobs_objs, page_dicts):
+                    src.description = upd.get("description") or src.description
+
+                self.jobs.extend(jobs_objs)
+                print(f"✅ Found {len(jobs_objs)} jobs on page {page + 1}")
+
                 # Be respectful with requests
                 await asyncio.sleep(3)
                 
@@ -237,23 +252,105 @@ class NoDriverLinkedInScraper:
         print(f"💾 Saved {len(self.jobs)} jobs to {filename}")
     
     async def close(self):
-        """Close the browser safely"""
         try:
+            # close detail tab (best-effort)
+            if getattr(self, "detail_tab", None):
+                try:
+                    if hasattr(self.detail_tab, "close") and callable(self.detail_tab.close):
+                        res = self.detail_tab.close()
+                        if inspect.isawaitable(res): await res
+                except Exception as e:
+                    print(f"⚠️ detail_tab close: {e}")
+
             if self.browser is not None:
-                # Try to close the browser gracefully
-                if hasattr(self.browser, 'stop') and callable(getattr(self.browser, 'stop', None)):
-                    await self.browser.stop()
-                    print("🔒 Browser closed successfully")
-                else:
-                    print("🔒 Browser stop method not available")
+                if hasattr(self.browser, 'stop') and callable(self.browser.stop):
+                    res = self.browser.stop()
+                    if inspect.isawaitable(res): await res
+                print("🔒 Browser closed successfully")
             else:
                 print("🔒 Browser was not initialized")
         except Exception as e:
-            print(f"⚠️ Error closing browser (this is usually safe to ignore): {e}")
-            # Don't re-raise the exception as this is cleanup code
+            print(f"⚠️ Error closing browser (safe to ignore): {e}")
         finally:
             self.browser = None
             self.main_tab = None
+            self.detail_tab = None
+            
+    async def _fetch_job_description(self, url: str, timeout: int = 15, retries: int = 1) -> str:
+        """
+        Navigate to the job detail page and extract the 'About the job' text.
+        Works for both right-rail and standalone job pages.
+        """
+        if not url:
+            return ""
+        tab = self.detail_tab  # <- use the dedicated tab
+
+        for attempt in range(retries + 1):
+            try:
+                await tab.get(url)
+                # wait for something meaningful to exist
+                try:
+                    await tab.wait_for(
+                        'div.show-more-less-html__markup, div.jobs-description-content__text, '
+                        'div.jobs-box__html-content, button.show-more-less-html__button',
+                        timeout=timeout
+                    )
+                except Exception:
+                    # No known containers found yet; continue anyway (we’ll still snapshot HTML)
+                    pass
+
+                # try to expand
+                try:
+                    await tab.evaluate("""
+                        (function(){
+                            const b = document.querySelector('button.show-more-less-html__button');
+                            if (b && /show more/i.test(b.innerText)) b.click();
+                        })();
+                    """)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+
+                html = await tab.evaluate("document.documentElement.outerHTML")
+                desc = extract_description_from_job_html(html)
+                if desc:
+                    return desc
+
+            except Exception as e:
+                print(f"⚠️ detail fetch attempt {attempt+1} failed: {e}")
+
+            # gentle backoff
+            await asyncio.sleep(0.8 + uniform(0, 0.6))
+
+        return ""
+
+    async def _enrich_jobs_with_descriptions(self, jobs: list, limit: int | None = None, per_job_timeout: int = 25):
+        """
+        Visit each job's detail page in the dedicated detail tab and fill 'description'.
+        Sequential on purpose: avoids tab navigation races & CDP 'Invalid InterceptionId'.
+        """
+        target = jobs if limit is None else jobs[:max(0, limit)]
+        for idx, job in enumerate(target, 1):
+            link = job.get("application_link")
+            if not link:
+                job["description"] = ""
+                continue
+
+            print(f"🧭 [desc] {idx}/{len(target)} -> {link}")
+            try:
+                # hard timeout to prevent any single stuck job from hanging the whole run
+                job["description"] = await asyncio.wait_for(
+                    self._fetch_job_description(link),
+                    timeout=per_job_timeout
+                )
+            except asyncio.TimeoutError:
+                print(f"⏳ [desc] timeout for {link}")
+                job["description"] = ""
+            except Exception as e:
+                print(f"❌ [desc] error for {link}: {e}")
+                job["description"] = ""
+            # small pacing to be polite
+            await asyncio.sleep(0.3)
 
 async def main(linkedin_username: str = None, linkedin_password: str = None, location: str = ""):
     scraper = NoDriverLinkedInScraper()

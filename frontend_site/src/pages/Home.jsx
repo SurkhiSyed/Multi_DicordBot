@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react'
-import supabase from '../helper/supabaseClient'
-import { Navigate } from 'react-router-dom'
+// src/pages/Home.jsx
+import React, { useState, useEffect, useMemo } from 'react';
+import supabase from '../helper/supabaseClient';
 
-
-// Icons (keep all your existing icons)
+// Icons (unchanged)
 const SearchIcon = ({ className = "w-5 h-5" }) => (
   <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -48,20 +47,35 @@ const ChevronRightIcon = ({ className = "w-4 h-4" }) => (
 
 // Status configuration
 const STATUS_CONFIG = {
-  not_applied: { label: 'Not Applied', color: 'bg-gray-100 text-gray-800', dotColor: 'bg-gray-400' },
-  applied: { label: 'Applied', color: 'bg-blue-100 text-blue-800', dotColor: 'bg-blue-400' },
-  rejected: { label: 'Rejected', color: 'bg-red-100 text-red-800', dotColor: 'bg-red-400' },
-  interview: { label: 'Interview', color: 'bg-yellow-100 text-yellow-800', dotColor: 'bg-yellow-400' },
-  offer: { label: 'Offer', color: 'bg-green-100 text-green-800', dotColor: 'bg-green-400' }
+  not_applied: { label: 'Not Applied', color: 'bg-gray-100 text-gray-800' },
+  applied: { label: 'Applied', color: 'bg-blue-100 text-blue-800' },
+  rejected: { label: 'Rejected', color: 'bg-red-100 text-red-800' },
+  interview: { label: 'Interview', color: 'bg-yellow-100 text-yellow-800' },
+  offer: { label: 'Offer', color: 'bg-green-100 text-green-800' }
 };
 
+// small helpers
+const truncate = (text = '', max = 260) =>
+  text.length > max ? text.slice(0, max).trim() + '…' : text;
+
+const badge = (label) => (
+  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-gray-100 text-gray-700">
+    {label}
+  </span>
+);
+
 function Home() {
-  const [jobs, setJobs] = useState([]);
-  const [userJobs, setUserJobs] = useState([]);
+  const [jobs, setJobs] = useState([]);                 // scraped jobs (from /api/jobs)
+  const [userJobs, setUserJobs] = useState([]);         // saved jobs (from DB)
   const [pagination, setPagination] = useState({ page: 1, total: 0, total_pages: 0 });
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingUserJobs, setIsLoadingUserJobs] = useState(false);
   const [user, setUser] = useState(null);
+
+  // track expanded descriptions (recent & saved)
+  const [expandedScraped, setExpandedScraped] = useState(() => new Set());
+  const [expandedSaved, setExpandedSaved] = useState(() => new Set());
+
   const [searchConfig, setSearchConfig] = useState({
     username: '',
     password: '',
@@ -70,140 +84,109 @@ function Home() {
     location: ''
   });
 
-  // Get current user session
+  // session
   useEffect(() => {
-    const getUser = async () => {
+    const init = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        setUser(session.user);
-        console.log('Current user:', session.user.id, session.user.email);
-      }
+      if (session?.user) setUser(session.user);
     };
+    init();
 
-    getUser();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.user) {
-        setUser(session.user);
-      } else {
-        setUser(null);
-      }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_evt, session) => {
+      setUser(session?.user ?? null);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (user?.id) fetchUserJobs(1);
+  }, [user]);
+
   const handleSearchConfigChange = (field, value) => {
-    setSearchConfig(prev => ({
-      ...prev,
-      [field]: value
-    }));
+    setSearchConfig(prev => ({ ...prev, [field]: value }));
   };
 
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
-    } catch (error) {
-      console.error('Error logging out:', error);
+    } catch (err) {
+      console.error('Error logging out:', err);
     }
   };
 
   const handleStatusChange = async (jobId, newStatus) => {
+    if (!user?.id) return;
     try {
-      const response = await fetch(`http://localhost:8000/api/user-jobs/${user.id}/status`, {
+      const res = await fetch(`http://localhost:8000/api/user-jobs/${user.id}/status`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          job_id: jobId,
-          status: newStatus
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId, status: newStatus })
       });
-
-      const data = await response.json();
-      
-      if (data.success) {
-        // Update the job status in local state
-        setUserJobs(prevJobs =>
-          prevJobs.map(job =>
-            job.id === jobId
-              ? { ...job, application_status: newStatus }
-              : job
-          )
-        );
-        console.log(`✅ Updated job ${jobId} status to ${newStatus}`);
-      } else {
+      const data = await res.json();
+      if (!data.success) {
         alert(`Failed to update status: ${data.error}`);
+        return;
       }
-    } catch (error) {
-      console.error('❌ Error updating job status:', error);
+      setUserJobs(prev =>
+        prev.map(j => (j.id === jobId ? { ...j, application_status: newStatus } : j))
+      );
+    } catch (err) {
+      console.error('❌ Error updating job status:', err);
       alert('Failed to update job status');
     }
   };
 
   const handleFetchJobs = async () => {
-    console.log('🔍 handleFetchJobs called');
-    
     if (!user?.id) {
-      alert('User session not found. Please try logging out and back in.');
+      alert('User session not found. Please log out and in again.');
       return;
     }
-
     if (!searchConfig.username || !searchConfig.password) {
       alert('Please enter your LinkedIn credentials');
       return;
     }
 
     setIsLoading(true);
-    
+    setExpandedScraped(new Set()); // reset expands for fresh results
+
     try {
-      const requestBody = {
+      const body = {
         linkedin_username: searchConfig.username,
         linkedin_password: searchConfig.password,
         num_jobs: searchConfig.numJobs,
-        searchTitle: searchConfig.searchTitle,  // Pass search title
-        location: searchConfig.location,        // Pass location
-        user_id: user.id
+        searchTitle: searchConfig.searchTitle,
+        location: searchConfig.location,
+        user_id: user.id,
       };
 
-      console.log('📤 Making request to /api/jobs with:', {
-        linkedin_username: requestBody.linkedin_username,
-        num_jobs: requestBody.num_jobs,
-        searchTitle: requestBody.searchTitle,
-        location: requestBody.location,
-        user_id: requestBody.user_id.slice(0, 8) + '...'
-      });
-
-      const response = await fetch(`http://localhost:8000/api/jobs`, {
+      const res = await fetch(`http://localhost:8000/api/jobs`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        console.error('❌ API error:', data?.error || res.statusText);
+        alert(`Error: ${data?.error || 'Failed to fetch jobs'}`);
+        return;
       }
 
-      const data = await response.json();
-      
-      if (data.success) {
-        setJobs(data.jobs);
-        console.log(`✅ Set ${data.jobs.length} jobs in state`);
-        
-        if (data.database) {
-          alert(`Scraping completed!\nFound: ${data.total_jobs} new jobs\nSaved to DB: ${data.database.saved} jobs\nDuplicates skipped: ${data.database.duplicates}`);
-        }
-        await fetchUserJobs(1); // Refresh user jobs
-      } else {
-        console.error('❌ API returned error:', data.error);
-        alert(`Error: ${data.error}`);
+      setJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      if (data.database) {
+        alert(
+          `Scraping completed!
+Found: ${data.total_jobs} new jobs
+Saved to DB: ${data.database.saved}
+Duplicates skipped: ${data.database.duplicates}`
+        );
       }
-    } catch (error) {
-      console.error('❌ Error fetching jobs:', error);
-      alert(`Failed to fetch jobs: ${error.message}`);
+      await fetchUserJobs(1);
+    } catch (err) {
+      console.error('❌ Error fetching jobs:', err);
+      alert(`Failed to fetch jobs: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -211,52 +194,66 @@ function Home() {
 
   const fetchUserJobs = async (page = 1) => {
     if (!user?.id) return;
-
     setIsLoadingUserJobs(true);
+    setExpandedSaved(new Set()); // reset expands when page changes
+
     try {
-      console.log(`📚 Fetching user jobs from database (page ${page})...`);
-      const response = await fetch(`http://localhost:8000/api/user-jobs/${user.id}?page=${page}&limit=50`);
-      const data = await response.json();
-      
+      const res = await fetch(
+        `http://localhost:8000/api/user-jobs/${user.id}?page=${page}&limit=50`
+      );
+      const data = await res.json();
       if (data.success) {
-        setUserJobs(data.jobs);
-        setPagination(data.pagination);
-        console.log(`✅ Fetched ${data.jobs.length} saved jobs for user (page ${page}/${data.pagination.total_pages})`);
+        setUserJobs(Array.isArray(data.jobs) ? data.jobs : []);
+        setPagination(data.pagination || { page, total: 0, total_pages: 0 });
       } else {
         console.error('❌ Failed to fetch user jobs:', data.error);
       }
-    } catch (error) {
-      console.error('❌ Error fetching user jobs:', error);
+    } catch (err) {
+      console.error('❌ Error fetching user jobs:', err);
     } finally {
       setIsLoadingUserJobs(false);
     }
   };
 
   const handlePageChange = (newPage) => {
-    if (newPage >= 1 && newPage <= pagination.total_pages) {
+    if (newPage >= 1 && newPage <= (pagination.total_pages || 1)) {
       fetchUserJobs(newPage);
     }
   };
 
-  // Fetch user jobs when user logs in
-  useEffect(() => {
-    if (user?.id) {
-      fetchUserJobs(1);
-    }
-  }, [user]);
+  const toggleExpandedScraped = (idx) => {
+    setExpandedScraped(prev => {
+      const next = new Set(prev);
+      next.has(idx) ? next.delete(idx) : next.add(idx);
+      return next;
+    });
+  };
+
+  const toggleExpandedSaved = (id) => {
+    setExpandedSaved(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const scrapedCount = useMemo(() => jobs.length || 0, [jobs]);
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto">
-        {/* Header with User Info */}
+        {/* Header */}
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-2">LinkedIn Job Search Dashboard 🧑‍💻🔎</h1>
-              <p className="text-gray-600">Find and track your dream internships and entry-level positions on LinkedIn</p>
+              <h1 className="text-3xl font-bold text-gray-900 mb-2">
+                LinkedIn Job Search Dashboard 🧑‍💻🔎
+              </h1>
+              <p className="text-gray-600">
+                Find and track your internships and entry-level roles from LinkedIn
+              </p>
             </div>
-            
-            {/* User Info & Logout */}
+
             {user && (
               <div className="flex items-center gap-4">
                 <div className="text-right">
@@ -279,14 +276,13 @@ function Home() {
           </div>
         </div>
 
-        {/* Search Configuration Panel */}
+        {/* Search Configuration */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-8">
           <div className="flex items-center gap-2 mb-4">
             <h2 className="text-lg font-semibold text-gray-900">Search Configuration</h2>
           </div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
-            {/* Search Title */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Job Title Keywords</label>
               <input
@@ -298,19 +294,17 @@ function Home() {
               />
             </div>
 
-            {/* Location */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Location (Optional)</label>
               <input
                 type="text"
                 value={searchConfig.location}
                 onChange={(e) => handleSearchConfigChange('location', e.target.value)}
-                placeholder="e.g., San Francisco, CA"
+                placeholder="e.g., Toronto, ON"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
 
-            {/* Number of Jobs */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Number of Jobs</label>
               <select 
@@ -328,7 +322,6 @@ function Home() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            {/* LinkedIn Email */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">LinkedIn Email</label>
               <input
@@ -339,8 +332,6 @@ function Home() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
-
-            {/* LinkedIn Password */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">LinkedIn Password</label>
               <input
@@ -353,7 +344,6 @@ function Home() {
             </div>
           </div>
 
-          {/* User Info Display */}
           {user && (
             <div className="bg-blue-50 border border-blue-200 rounded-md p-3 mb-4">
               <div className="flex items-center gap-2 text-sm text-blue-800">
@@ -363,7 +353,6 @@ function Home() {
             </div>
           )}
 
-          {/* Search Button */}
           <button
             onClick={handleFetchJobs}
             disabled={isLoading || !searchConfig.username || !searchConfig.password || !user?.id}
@@ -373,17 +362,14 @@ function Home() {
             {isLoading ? 'Searching LinkedIn...' : 'Search LinkedIn Jobs'}
           </button>
 
-          {/* Debug Info */}
           {isLoading && (
-            <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
-              <div className="text-sm text-yellow-800">
-                🔄 Scraping LinkedIn... This may take a few minutes. Check the Flask console for progress.
-              </div>
+            <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md text-sm text-yellow-800">
+              🔄 Scraping LinkedIn… check the Flask console for progress.
             </div>
           )}
         </div>
 
-        {/* Display both scraped jobs and saved jobs */}
+        {/* Two columns */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Recently Scraped Jobs */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200">
@@ -393,47 +379,65 @@ function Home() {
                   <BriefcaseIcon className="text-blue-600" />
                   <h2 className="text-lg font-semibold text-gray-900">Recently Scraped Jobs</h2>
                 </div>
-                <span className="text-sm text-gray-500">{jobs.length} jobs found</span>
+                <span className="text-sm text-gray-500">{scrapedCount} jobs found</span>
               </div>
             </div>
 
             <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
-              {jobs.slice(0, 10).map((job, index) => (
-                <div key={index} className="p-4 hover:bg-gray-50 transition-colors">
-                  <h3 className="font-semibold text-gray-900 mb-1">{job.name}</h3>
-                  <p className="text-blue-600 text-sm mb-2">{job.company}</p>
-                  <div className="flex items-center gap-2 text-xs text-gray-600 mb-2">
-                    <span>{job.location}</span>
-                    <span>•</span>
-                    <span>{job.job_type}</span>
-                    {job.posting_date && (
-                      <>
-                        <span>•</span>
-                        <span>{job.posting_date}</span>
-                      </>
-                    )}
-                  </div>
-                  {job.application_link && (
-                    <a 
-                      href={job.application_link} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-                    >
-                      View Job <ExternalLinkIcon className="w-3 h-3" />
-                    </a>
-                  )}
-                </div>
-              ))}
-              {jobs.length === 0 && (
+              {jobs.length > 0 ? (
+                jobs.map((job, index) => {
+                  const expanded = expandedScraped.has(index);
+                  const desc = job?.description || '';
+                  const hasDesc = Boolean(desc && desc.trim().length);
+
+                  return (
+                    <div key={`${job.application_link || index}-${index}`} className="p-4 hover:bg-gray-50 transition-colors">
+                      <h3 className="font-semibold text-gray-900 mb-1">{job.name}</h3>
+                      <p className="text-blue-600 text-sm mb-2">{job.company || '—'}</p>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 mb-2">
+                        {job.location && <span>{job.location}</span>}
+                        {job.job_type && <>• <span>{badge(job.job_type)}</span></>}
+                        {job.location_type && <>• <span>{badge(job.location_type)}</span></>}
+                        {job.posting_date && <>• <span>{job.posting_date}</span></>}
+                      </div>
+
+                      {hasDesc && (
+                        <div className="text-sm text-gray-700 mb-2">
+                          {expanded ? desc : truncate(desc)}
+                          {desc.length > 260 && (
+                            <button
+                              onClick={() => toggleExpandedScraped(index)}
+                              className="ml-2 text-blue-600 hover:text-blue-800 text-xs font-medium"
+                            >
+                              {expanded ? 'Show less' : 'Show more'}
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {job.application_link && (
+                        <a
+                          href={job.application_link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          View Job <ExternalLinkIcon className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
                 <div className="p-8 text-center text-gray-500">
-                  No jobs scraped yet. Configure search and click "Search LinkedIn Jobs".
+                  No jobs scraped yet. Configure search and click “Search LinkedIn Jobs”.
                 </div>
               )}
             </div>
           </div>
 
-          {/* Saved Jobs from Database with Status Tracking */}
+          {/* Saved Jobs */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
@@ -449,46 +453,61 @@ function Home() {
 
             <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
               {isLoadingUserJobs ? (
-                <div className="p-8 text-center text-gray-500">
-                  Loading jobs...
-                </div>
+                <div className="p-8 text-center text-gray-500">Loading jobs…</div>
               ) : userJobs.length > 0 ? (
-                userJobs.map((job) => {
-                  const status = job.application_status || 'not_applied';
-                  const statusConfig = STATUS_CONFIG[status];
-                  
+                userJobs.map(job => {
+                  const statusKey = job.application_status || 'not_applied';
+                  const statusCfg = STATUS_CONFIG[statusKey] || STATUS_CONFIG.not_applied;
+                  const expanded = expandedSaved.has(job.id);
+                  const desc = job?.description || '';
+                  const hasDesc = Boolean(desc && desc.trim().length);
+
                   return (
                     <div key={job.id} className="p-4 hover:bg-gray-50 transition-colors">
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex-1">
                           <h3 className="font-semibold text-gray-900 mb-1">{job.job_name}</h3>
-                          <p className="text-green-600 text-sm mb-2">{job.company}</p>
+                          <p className="text-green-600 text-sm mb-2">{job.company || '—'}</p>
                         </div>
                         <div className="ml-4">
                           <select
-                            value={status}
+                            value={statusKey}
                             onChange={(e) => handleStatusChange(job.id, e.target.value)}
-                            className={`text-xs px-2 py-1 rounded-full border-0 font-medium ${statusConfig.color} focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-green-500`}
+                            className={`text-xs px-2 py-1 rounded-full border-0 font-medium ${statusCfg.color} focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-green-500`}
                           >
-                            {Object.entries(STATUS_CONFIG).map(([key, config]) => (
-                              <option key={key} value={key}>{config.label}</option>
+                            {Object.entries(STATUS_CONFIG).map(([k, cfg]) => (
+                              <option key={k} value={k}>{cfg.label}</option>
                             ))}
                           </select>
                         </div>
                       </div>
-                      
-                      <div className="flex items-center gap-2 text-xs text-gray-600 mb-2">
-                        <span>{job.location}</span>
-                        <span>•</span>
-                        <span>{job.source}</span>
-                        <span>•</span>
-                        <span>{new Date(job.created_at).toLocaleDateString()}</span>
+
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 mb-2">
+                        {job.location && <span>{job.location}</span>}
+                        {job.job_type && <>• <span>{badge(job.job_type)}</span></>}
+                        {job.location_type && <>• <span>{badge(job.location_type)}</span></>}
+                        {job.source && <>• <span>{job.source}</span></>}
+                        {job.created_at && <>• <span>{new Date(job.created_at).toLocaleDateString()}</span></>}
                       </div>
-                      
+
+                      {hasDesc && (
+                        <div className="text-sm text-gray-700 mb-2">
+                          {expanded ? desc : truncate(desc)}
+                          {desc.length > 260 && (
+                            <button
+                              onClick={() => toggleExpandedSaved(job.id)}
+                              className="ml-2 text-green-600 hover:text-green-800 text-xs font-medium"
+                            >
+                              {expanded ? 'Show less' : 'Show more'}
+                            </button>
+                          )}
+                        </div>
+                      )}
+
                       {job.application_link && (
-                        <a 
-                          href={job.application_link} 
-                          target="_blank" 
+                        <a
+                          href={job.application_link}
+                          target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 text-xs text-green-600 hover:text-green-800"
                         >
@@ -500,15 +519,12 @@ function Home() {
                 })
               ) : (
                 <div className="p-8 text-center text-gray-500">
-                  {user ? 
-                    "No saved jobs yet. Search for jobs to save them to your profile." :
-                    "Please log in to view your saved jobs."
-                  }
+                  {user ? "No saved jobs yet. Search to populate your list." : "Please log in to view your saved jobs."}
                 </div>
               )}
             </div>
 
-            {/* Pagination Controls */}
+            {/* Pagination */}
             {pagination.total_pages > 1 && (
               <div className="p-4 border-t border-gray-200">
                 <div className="flex items-center justify-between">
@@ -524,11 +540,11 @@ function Home() {
                       <ChevronLeftIcon className="w-4 h-4" />
                       Previous
                     </button>
-                    
+
                     <span className="text-sm text-gray-600">
                       Page {pagination.page} of {pagination.total_pages}
                     </span>
-                    
+
                     <button
                       onClick={() => handlePageChange(pagination.page + 1)}
                       disabled={pagination.page >= pagination.total_pages}
@@ -543,9 +559,10 @@ function Home() {
             )}
           </div>
         </div>
+
       </div>
     </div>
-  )
+  );
 }
 
-export default Home
+export default Home;
