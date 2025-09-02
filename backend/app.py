@@ -21,11 +21,16 @@ load_dotenv()
 app = Flask(__name__)
 
 # Enable CORS for all routes with more permissive settings
-CORS(app, 
-     origins=["http://localhost:3000", "http://localhost:5173", "http://192.168.112.1:3000", "http://127.0.0.1:3000"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
-     supports_credentials=True)
+CORS(app,
+  origins=[
+    "http://localhost:3000",
+    "https://ApplicationHelper.onrender.com"
+  ],
+  methods=["GET","POST","PUT","DELETE","OPTIONS"],
+  allow_headers=["Content-Type","Authorization","Access-Control-Allow-Credentials"],
+  supports_credentials=True
+)
+
 
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "rag", "chroma")
 app.register_blueprint(resume_bp)
