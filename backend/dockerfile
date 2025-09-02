@@ -1,40 +1,33 @@
-# ---- Base image ----
+# ----- base image -----
 FROM python:3.11-slim
 
-# Prevent interactive tzdata etc.
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PORT=8000 \
-    # chrom* paths for nodriver
-    CHROME_BIN=/usr/bin/chromium \
-    CHROME_PATH=/usr/bin/chromium
-
-# ---- System deps (Chromium + fonts + libs Chrome needs) ----
+# System deps you need (chromium etc. for your scraper)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-liberation \
     libnss3 libxss1 libasound2 libxshmfence1 libx11-6 libxcomposite1 \
     libxdamage1 libxrandr2 libgbm1 libgtk-3-0 ca-certificates curl git \
-    && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/*
 
-# ---- App deps ----
+# Workdir
 WORKDIR /app
-COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# ---- App code ----
-COPY backend/ /app/
+# --- Python deps ---
+# since Root Directory is backend/, requirements.txt is at ./requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-# A place for generated resumes; you can mount a Render Disk here
-ENV OUTPUT_DIR=/data/resumes
-RUN mkdir -p ${OUTPUT_DIR}
+# --- App code ---
+COPY . /app/
 
-# ---- Runtime user (non-root) ----
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
+# dirs used by your app
+RUN mkdir -p /app/uploads /app/generated_resumes
 
-# ---- Start (gunicorn) ----
-# Bind to $PORT (Render sets it), give a longer timeout for scraping
-CMD gunicorn -w 2 -k gthread -t 240 -b 0.0.0.0:${PORT} app:app
+# runtime env
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+EXPOSE 8000
+
+# start Flask with gunicorn
+# (if you use uvicorn/ASGI, swap the command accordingly)
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "app:app"]
