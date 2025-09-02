@@ -7,6 +7,7 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from jobs.main_nodriver import NoDriverLinkedInScraper
 from supabase import create_client, Client
+import sys
 from dotenv import load_dotenv
 import uuid
 # app.py (top)
@@ -20,16 +21,33 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Enable CORS for all routes with more permissive settings
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://applicationhelper.onrender.com")
+
+# CORS: match exact origins (no trailing slash)
 CORS(app,
-  origins=[
-    "http://localhost:3000",
-    "https://ApplicationHelper.onrender.com"
-  ],
-  methods=["GET","POST","PUT","DELETE","OPTIONS"],
-  allow_headers=["Content-Type","Authorization","Access-Control-Allow-Credentials"],
-  supports_credentials=True
-)
+     resources={r"/api/*": {"origins": [FRONTEND_ORIGIN, "http://localhost:3000", "http://localhost:5173"]}},
+     supports_credentials=True)
+
+# Health + root ping (Render health check)
+@app.route("/", methods=["GET"])
+def root():
+    return "OK", 200
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return jsonify({"status": "ok"}), 200
+
+# Optional: debug your env quickly
+@app.route("/api/debug", methods=["GET"])
+def debug():
+    return jsonify({
+        "python": sys.version,
+        "port": os.getenv("PORT"),
+        "supabase_url_set": bool(os.getenv("SUPABASE_URL")),
+        "has_service_key": bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")),
+        "frontend_origin": FRONTEND_ORIGIN,
+    }), 200
+
 
 
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "rag", "chroma")
