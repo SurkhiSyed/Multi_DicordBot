@@ -38,7 +38,7 @@ def healthz():
     return jsonify({"status": "ok"}), 200
 
 # Optional: debug your env quickly
-@app.route("/api/debug", methods=["GET"])
+@app.route("/api/debug/env", methods=["GET"])
 def debug():
     return jsonify({
         "python": sys.version,
