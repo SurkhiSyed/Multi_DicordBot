@@ -195,6 +195,7 @@ def rag():
     print(f"RAG result: {result}")
     return jsonify(result)
 
+'''
 @app.route('/api/debug', methods=['GET'])
 def debug():
     print("CWD:", os.getcwd())
@@ -205,6 +206,7 @@ def debug():
         "chroma_path": CHROMA_PATH,
         "google_api_key": os.getenv("GOOGLE_API_KEY")
     })
+'''
 
 async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: str, num_jobs: int = 56, search_title: str = "intern", location: str = "", user_id: str = None):
     """Async wrapper for the LinkedIn scraper with smart duplicate detection"""
