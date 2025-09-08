@@ -21,7 +21,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://applicationhelper.onrender.com")
+#FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "https://applicationhelper.onrender.com")
 
 # CORS: match exact origins (no trailing slash)
 CORS(app,
