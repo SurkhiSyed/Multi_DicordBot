@@ -287,6 +287,14 @@ Duplicates skipped: ${data.database.duplicates}`
                   <LogoutIcon className="w-4 h-4"/>
                   Logout
                 </button>
+                {/* Resume Button */}
+                <button
+                  onClick={() => navigate('/resume')}
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-blue-600 hover:text-blue-900 hover:bg-blue-100 rounded-md transition-colors"
+                >
+                  <BriefcaseIcon className="w-4 h-4"/>
+                  Resume Page
+                </button>
               </div>
             )}
           </div>
