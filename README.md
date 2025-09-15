@@ -90,6 +90,7 @@ SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 SUPABASE_ANON_KEY=your_anon_key
 FRONTEND_ORIGIN=http://localhost:3000
+GEMINI_API_KEY=your_gemini_api_key
 ```
 ### 3. Frontend Setup
 #### 1. Install the required packages
@@ -113,3 +114,4 @@ python app.py
 cd ../frontend_site
 npm start
 ```
+
