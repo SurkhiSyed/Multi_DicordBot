@@ -14,7 +14,11 @@ import uuid
 from flask import send_from_directory
 from werkzeug.utils import secure_filename
 from resume_service import resume_bp
-
+from transformers import pipeline
+import google.generativeai as genai
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_BREAK
 
 # Load environment variables
 load_dotenv()
@@ -58,7 +62,7 @@ supabase_url = os.getenv("SUPABASE_URL")
 supabase_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # Use service role key
 supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")  # Keep for fallback
 
-ALLOWED_EXT = {'.docx', '.pdf'}
+ALLOWED_EXT = {'.docx'}
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -255,7 +259,7 @@ async def scrape_linkedin_jobs_async(linkedin_username: str, linkedin_password: 
                 
                 if application_link not in existing_links:
                     new_jobs.append(job_dict)
-                    existing_links.add(application_link)  # Add to set to prevent duplicates in same batch
+                    existing_links.add(application_link) # Add to set to prevent duplicates in same batch
                 else:
                     duplicate_count += 1
             
@@ -547,70 +551,302 @@ def get_user_jobs(user_id):
 
 # app.py
 
-@app.route('/api/resume/tailor', methods=['POST'])
+# Load the LLM model (e.g., Hugging Face model)
+llm = pipeline("text2text-generation", model="google/flan-t5-large", device=0)  # Use device=0 for GPU, -1 for CPU
+
+@app.route('/api/resume/tune', methods=['POST'])
 def resume_tailor():
     try:
-      if 'resume' not in request.files:
-          return jsonify({"success": False, "error": "No resume file provided"}), 400
+        # Get the uploaded resume file
+        resume = request.files.get('file')
+        if not resume:
+            return jsonify({"success": False, "error": "No resume file provided"}), 400
 
-      resume = request.files['resume']
-      user_id = request.form.get('user_id', '')
-      job_id = request.form.get('job_id', '')
-      # mode = request.form.get('mode', 'auto')  # reserved if you want to override LLM/lite
+        # Get required parameters
+        user_id = request.form.get('user_id')
+        job_description = request.form.get('job_description')
 
-      if not user_id or not job_id:
-          return jsonify({"success": False, "error": "user_id and job_id are required"}), 400
+        if not user_id or not job_description:
+            return jsonify({"success": False, "error": "Missing user_id or job_description"}), 400
 
-      # Validate user_id
-      try:
-          uuid.UUID(user_id)
-      except ValueError:
-          return jsonify({"success": False, "error": "Invalid user_id"}), 400
+        # Save the uploaded resume
+        fname = secure_filename(resume.filename or f"resume-{uuid.uuid4().hex}.docx")
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in ALLOWED_EXT:
+            return jsonify({"success": False, "error": "Only .docx files are supported"}), 400
 
-      # Get job description from DB (and ensure it belongs to this user)
-      if not supabase:
-          return jsonify({"success": False, "error": "Database not available"}), 500
+        upload_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+        resume.save(upload_path)
 
-      job_q = supabase.table("user_jobs").select("*").eq("id", job_id).eq("user_id", user_id).limit(1).execute()
-      if not job_q.data:
-          return jsonify({"success": False, "error": "Job not found for this user"}), 404
+        # Fetch user information from Supabase
+        user_query = supabase.table("Users").select("*").eq("user_uuid", user_id).limit(1).execute()
+        if not user_query.data:
+            return jsonify({"success": False, "error": "User not found"}), 404
 
-      job = job_q.data[0]
-      job_text = job.get("description") or ""
+        user_info = user_query.data[0]
+        projects = user_info.get("Projects", [])
+        print(projects)
+        experiences = user_info.get("Experiences", [])
+        print(experiences)
 
-      # Save upload
-      fname = secure_filename(resume.filename or f"resume-{uuid.uuid4().hex}.docx")
-      ext = os.path.splitext(fname)[1].lower()
-      if ext not in ALLOWED_EXT:
-          return jsonify({"success": False, "error": "Only .docx or .pdf files are supported"}), 400
+        # Generate tailored content using Gemini
+        tailored_projects = _generate_tailored_points(projects, job_description, "project")
+        tailored_experiences = _generate_tailored_points(experiences, job_description, "experience")
 
-      upload_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
-      resume.save(upload_path)
+        print("Tailored Projects:", tailored_projects)
+        print("Tailored Experiences:", tailored_experiences)
 
-      # Process
-      out_path, summary = process_resume(upload_path, job_text)
+        # Process the resume to include tailored content
+        out_path, summary = process_resume(upload_path, tailored_projects, tailored_experiences)
 
-      # We return a JSON with a download url + change summary
-      dl_name = os.path.basename(out_path)
-      return jsonify({
-          "success": True,
-          "download_url": f"/api/resume/download/{dl_name}",
-          "change_summary": summary
-      })
+        # Return the tailored resume download link
+        dl_name = os.path.basename(out_path)
+        return jsonify({
+            "success": True,
+            "download_url": f"/api/resume/download/{dl_name}",
+            "change_summary": summary
+        })
+
     except Exception as e:
-      print("❌ resume_tailor error:", e)
-      return jsonify({"success": False, "error": f"{e}"}), 500
+        print(f"❌ Error in resume_tailor: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
-
+OUTPUT_DIR = UPLOAD_DIR  # or a dedicated "outputs" folder you create
 @app.route('/api/resume/download/<path:fname>', methods=['GET'])
 def resume_download(fname):
     try:
-        return send_from_directory(SAFE_OUTPUT_DIR, fname, as_attachment=True)
-    except Exception as e:
+        return send_from_directory(OUTPUT_DIR, fname, as_attachment=True)
+    except Exception:
         return jsonify({"success": False, "error": "File not found"}), 404
+
+
+@app.route('/api/user/update', methods=['POST'])
+def update_user_info():
+    """
+    Update or insert user information (Projects, Experiences, Skills) in the Users table.
+    """
+    try:
+        data = request.json
+        user_uuid = data.get("user_uuid")
+        projects = data.get("projects", [])
+        experiences = data.get("experiences", [])
+        skills = data.get("skills", [])
+
+        if not user_uuid:
+            return jsonify({"success": False, "error": "user_uuid is required"}), 400
+
+        if not supabase:
+            return jsonify({"success": False, "error": "Database not available"}), 500
+
+        # Check if the user already exists in the Users table
+        user_query = supabase.table("Users").select("*").eq("user_uuid", user_uuid).limit(1).execute()
+        if user_query.data:
+            # Update the existing user row
+            result = supabase.table("Users").update({
+                "Projects": projects,
+                "Experiences": experiences,
+                "Skills": skills
+            }).eq("user_uuid", user_uuid).execute()
+            if result.data:
+                return jsonify({"success": True, "message": "User information updated successfully"})
+            else:
+                return jsonify({"success": False, "error": "Failed to update user information"}), 500
+        else:
+            # Insert a new user row
+            result = supabase.table("Users").insert({
+                "user_uuid": user_uuid,
+                "Projects": projects,
+                "Experiences": experiences,
+                "Skills": skills
+            }).execute()
+            if result.data:
+                return jsonify({"success": True, "message": "User information created successfully"})
+            else:
+                return jsonify({"success": False, "error": "Failed to create user information"}), 500
+    except Exception as e:
+        print(f"❌ Error in update_user_info: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/user/info/<user_uuid>', methods=['GET'])
+def get_user_info(user_uuid):
+    """
+    Fetch user information (Projects, Experiences, Skills) from the Users table.
+    """
+    try:
+        if not supabase:
+            return jsonify({"success": False, "error": "Database not available"}), 500
+
+        # Fetch user information
+        user_query = supabase.table("Users").select("*").eq("user_uuid", user_uuid).limit(1).execute()
+        if not user_query.data:
+            return jsonify({"success": False, "error": "User not found"}), 404
+
+        user_info = user_query.data[0]
+        return jsonify({
+            "success": True,
+            "projects": user_info.get("Projects", []),
+            "experiences": user_info.get("Experiences", []),
+            "skills": user_info.get("Skills", [])
+        })
+    except Exception as e:
+        print(f"❌ Error in get_user_info: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# Configure Gemini API
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
+
+def _generate_tailored_points(items, job_description, item_type):
+    """
+    Generate tailored bullet points using Gemini.
+    """
+    if not items:
+        return []
+
+    # Prompt for generating new bullet points
+    prompt = f"""
+You are a professional resume writer. Based on the following job description and {item_type}s, select the top 3 most relevant {item_type}s and
+generate 3 bullet points that highlight the most relevant skills and match the job description.
+
+Job Description:
+{job_description}
+
+{item_type.title()}s:
+{items}
+
+Requirements:
+1. Each bullet point should:
+   - Start with a strong action verb.
+   - Include specific metrics and achievements where possible.
+   - Use relevant keywords from the job description.
+   - Be concise and impactful (maximum 20 words per bullet).
+2. Focus on creating, unique bullet points that align with the job description.
+3. Output only the 2-3 bullet points, one per line, without numbers or bullet markers, and backslash n between them.
+"""
+
+    try:
+        # Use Gemini to generate new bullet points
+        response = model.generate_content(prompt)
+        bullets = response.text.strip().split('\n')
+        # Clean up and take the top 3 bullets
+        bullets = [b.strip('•- ').strip() for b in bullets if b.strip()]
+        return bullets[:3]
+    except Exception as e:
+        print(f"Error generating bullets with Gemini: {e}")
+        return []  # Return an empty list if generation fails
+
+def process_resume(upload_path, projects, experiences):
+    """
+    Process the resume while maintaining its original format and adding tailored sections.
+    """
+    try:
+        # Load the original resume
+        doc = Document(upload_path)
+
+        # Add a page break to separate original content from tailored content
+        doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+
+        # Add tailored sections
+        doc.add_heading('Tailored Experience Highlights', level=1)
+        for exp in experiences:
+            p = doc.add_paragraph(style='List Bullet')
+            run = p.add_run(exp)
+            run.font.name = 'Calibri'
+            run.font.size = Pt(11)
+
+        doc.add_heading('Tailored Project Highlights', level=1)
+        for proj in projects:
+            p = doc.add_paragraph(style='List Bullet')
+            run = p.add_run(proj)
+            run.font.name = 'Calibri'
+            run.font.size = Pt(11)
+
+        # Save as new file
+        tailored_path = upload_path.replace('.docx', '-tailored.docx')
+        doc.save(tailored_path)
+
+        summary = [
+            f"Added {len(experiences)} tailored experiences",
+            f"Added {len(projects)} tailored projects"
+        ]
+
+        return tailored_path, summary
+    except Exception as e:
+        print(f"Error processing resume: {e}")
+        return upload_path, ["Failed to process resume"]
+
+
+def _add_section(doc, section_title, items):
+    """
+    Add a section to the resume document.
+    """
+    doc.add_heading(section_title, level=1)
+    for item in items:
+        doc.add_paragraph(f"- {item}")
+        
+        
+@app.route('/api/_routes')
+def _routes():
+    return "<br>".join(sorted(str(r) for r in app.url_map.iter_rules()))
 
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', '8000'))  # Render sets PORT
     # turn off debug in prod
     app.run(host='0.0.0.0', port=port, debug=False)
+
+import os
+from werkzeug.utils import secure_filename
+
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'docx', 'pdf'}
+
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route('/api/resume/tune', methods=['POST'])
+def resume_tune():
+    try:
+        # Debug logging
+        print("Received request files:", request.files)
+        print("Received form data:", request.form)
+
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "No file part"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "No selected file"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({"success": False, "error": "Invalid file type"}), 400
+
+        user_id = request.form.get('user_id')
+        job_description = request.form.get('job_description')
+
+        if not user_id or not job_description:
+            return jsonify({"success": False, "error": "Missing user_id or job_description"}), 400
+
+        # Save the file
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+
+        # Process the resume (implement your resume processing logic here)
+        # ...
+
+        return jsonify({
+            "success": True,
+            "message": "Resume processed successfully",
+            "filepath": filepath
+        })
+
+    except Exception as e:
+        print(f"Error processing resume: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+

@@ -21,6 +21,11 @@ export default function Resume() {
   const [result, setResult] = useState(null);
   const [activeJob, setActiveJob] = useState(null);
 
+  const [jobDescription, setJobDescription] = useState("");
+  const [projects, setProjects] = useState([""]);
+  const [experiences, setExperiences] = useState([""]);
+  const [skills, setSkills] = useState(""); // New state for skills
+
   useEffect(() => {
     const init = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -50,6 +55,28 @@ export default function Resume() {
     })();
   }, [user]);
 
+  useEffect(() => {
+    const fetchUserInfo = async () => {
+      if (!user?.id) return;
+
+      try {
+        const response = await fetch(`${API_URL}/api/user/info/${user.id}`);
+        const data = await response.json();
+        if (data.success) {
+          setProjects(data.projects || [""]);
+          setExperiences(data.experiences || [""]);
+          setSkills((data.skills || []).join(", ")); // Convert skills array to a comma-separated string
+        } else {
+          console.error(data.error || "Failed to fetch user information");
+        }
+      } catch (error) {
+        console.error("Error fetching user information:", error);
+      }
+    };
+
+    fetchUserInfo();
+  }, [user]);
+
   const handleTune = async (job) => {
     if (!resumeFile) {
       alert("Upload your master resume (.docx) first.");
@@ -63,25 +90,113 @@ export default function Resume() {
       const fd = new FormData();
       fd.append("file", resumeFile);
       fd.append("user_id", user.id);
+      fd.append("job_description", job.description || "");
       fd.append("job_id", job.id);
-      fd.append("use_llm", useLLM ? "true" : "false");
+      // Add optional job-specific information
+      if (job.application_link) {
+        fd.append("job_url", job.application_link);
+      }
 
-      // Replace hardcoded URL with API_URL
-      const r = await fetch(`${API_URL}/api/resume/tune`, {
+      const response = await fetch(`${API_URL}/api/resume/tune`, {
         method: "POST",
         body: fd,
       });
-      const data = await r.json();
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to tune resume');
+      }
+
+      const data = await response.json();
       if (data.success) {
         setResult(data);
       } else {
         alert(data.error || "Failed to tune resume");
       }
-    } catch (e) {
-      console.error(e);
-      alert("Error tuning resume");
+    } catch (error) {
+      console.error("Error tuning resume:", error);
+      alert(error.message || "Error tuning resume");
     } finally {
       setIsTuning(false);
+    }
+  };
+
+  const handleAddProject = () => setProjects([...projects, ""]);
+  const handleAddExperience = () => setExperiences([...experiences, ""]);
+
+  const handleTuneResume = async () => {
+    if (!resumeFile) {
+      alert("Please upload your master resume (.docx) first.");
+      return;
+    }
+
+    if (!jobDescription) {
+      alert("Please enter a job description first.");
+      return;
+    }
+
+    setIsTuning(true);
+    setResult(null);
+
+    try {
+      const fd = new FormData();
+      fd.append("file", resumeFile);
+      fd.append("user_id", user.id);
+      fd.append("job_description", jobDescription);
+      // Add a dummy job_id for the direct tune case
+      fd.append("job_id", "direct_tune");
+
+      console.log("Sending request with:", {
+        file: resumeFile.name,
+        user_id: user.id,
+        job_description: jobDescription.substring(0, 100) + "..."
+      });
+
+      const response = await fetch(`${API_URL}/api/resume/tune`, {
+        method: "POST",
+        body: fd,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to tune resume');
+      }
+
+      const data = await response.json();
+      if (data.success) {
+        setResult(data);
+      } else {
+        alert(data.error || "Failed to tune resume");
+      }
+    } catch (error) {
+      console.error("Error tuning resume:", error);
+      alert(error.message || "Error tuning resume");
+    } finally {
+      setIsTuning(false);
+    }
+  };
+
+  const handleUpdateInformation = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/user/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_uuid: user.id,
+          projects,
+          experiences,
+          skills: skills.split(",").map(skill => skill.trim()) // Convert skills to an array
+        }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        alert(data.message || "Information updated successfully");
+      } else {
+        alert(data.error || "Failed to update information");
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Error updating information");
     }
   };
 
@@ -104,8 +219,12 @@ export default function Resume() {
           <h2 className="font-semibold">1) Upload your master resume (.docx)</h2>
           <input
             type="file"
-            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            onChange={(e) => setResumeFile(e.target.files?.[0] || null)}
+            accept=".docx,.pdf"
+            onChange={(e) => {
+              const file = e.target.files[0];
+              console.log("Uploaded file:", file); // Debug log
+              setResumeFile(file);
+            }}
             className="block w-full"
           />
           <label className="inline-flex items-center gap-2 text-sm">
@@ -154,41 +273,106 @@ export default function Resume() {
           </div>
         </section>
 
+        <section className="bg-white border rounded-lg p-5 space-y-4">
+          <h2 className="font-semibold">1) Enter Job Description</h2>
+          <textarea
+            value={jobDescription}
+            onChange={(e) => setJobDescription(e.target.value)}
+            placeholder="Paste the job description here..."
+            className="w-full border rounded p-2"
+          />
+        </section>
+
+        <section className="bg-white border rounded-lg p-5 space-y-4">
+          <h2 className="font-semibold">2) Add Projects</h2>
+          {projects.map((project, index) => (
+            <textarea
+              key={index}
+              value={project}
+              onChange={(e) => {
+                const updatedProjects = [...projects];
+                updatedProjects[index] = e.target.value;
+                setProjects(updatedProjects);
+              }}
+              placeholder={`Project ${index + 1} description...`}
+              className="w-full border rounded p-2 mb-2"
+            />
+          ))}
+          <button onClick={handleAddProject} className="text-blue-600">
+            + Add Another Project
+          </button>
+        </section>
+
+        <section className="bg-white border rounded-lg p-5 space-y-4">
+          <h2 className="font-semibold">3) Add Experiences</h2>
+          {experiences.map((experience, index) => (
+            <textarea
+              key={index}
+              value={experience}
+              onChange={(e) => {
+                const updatedExperiences = [...experiences];
+                updatedExperiences[index] = e.target.value;
+                setExperiences(updatedExperiences);
+              }}
+              placeholder={`Experience ${index + 1} description...`}
+              className="w-full border rounded p-2 mb-2"
+            />
+          ))}
+          <button onClick={handleAddExperience} className="text-blue-600">
+            + Add Another Experience
+          </button>
+        </section>
+
+        <section className="bg-white border rounded-lg p-5 space-y-4">
+          <h2 className="font-semibold">4) Add Skills</h2>
+          <textarea
+            value={skills}
+            onChange={(e) => setSkills(e.target.value)}
+            placeholder="Enter your skills, separated by commas (e.g., Python, React, SQL)"
+            className="w-full border rounded p-2"
+          />
+        </section>
+
+        <button
+          onClick={handleTuneResume}
+          className="px-4 py-2 bg-blue-600 text-white rounded"
+        >
+          Tune Resume
+        </button>
+
+        <button
+          onClick={handleUpdateInformation}
+          className="px-4 py-2 bg-green-600 text-white rounded"
+        >
+          Update Information
+        </button>
+
         {result && (
           <section className="bg-white border rounded-lg p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">3) Review & Download</h2>
+            <h2 className="font-semibold">5) Tailored Resume</h2>
+            <div>
+              <h3 className="font-semibold">Download Your Tailored Resume</h3>
               <a
                 href={`${API_URL}${result.download_url}`}
-                className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 underline"
               >
-                Download tailored .docx
+                Click here to download
               </a>
             </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {result.change_summary && (
               <div>
-                <h3 className="text-sm font-semibold mb-2">Changed bullets ({result.changed_bullets.length})</h3>
-                <div className="space-y-3">
-                  {result.changed_bullets.map((c, i) => (
-                    <div key={i} className="text-sm bg-green-50 border border-green-200 rounded p-3">
-                      <div className="text-[11px] text-green-700 mb-1">relevance: {c.relevance}</div>
-                      <div className="line-through text-gray-500">{c.before}</div>
-                      <div className="font-medium mt-1">{c.after}</div>
-                    </div>
+                <h3 className="font-semibold">Change Summary</h3>
+                <ul>
+                  {result.change_summary.map((change, index) => (
+                    <li key={index} className="text-gray-700">
+                      - {change}
+                    </li>
                   ))}
-                  {result.changed_bullets.length === 0 && <div className="text-gray-500 text-sm">No textual changes.</div>}
-                </div>
+                </ul>
               </div>
-              <div>
-                <h3 className="text-sm font-semibold mb-2">Removed (to fit one page)</h3>
-                <div className="text-sm text-gray-600">
-                  {result.removed_bullets.length > 0
-                    ? `Removed ${result.removed_bullets.length} low-relevance bullets.`
-                    : "No bullets removed."}
-                </div>
-              </div>
-            </div>
+            )}
           </section>
         )}
       </div>
