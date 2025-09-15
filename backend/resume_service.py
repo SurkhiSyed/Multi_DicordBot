@@ -134,6 +134,44 @@ def _add_bullet_paragraph(after_para, text, style_name: str | None = None):
         pass
     return p
 
+def _first_line(s: str) -> str:
+    return (s or "").splitlines()[0].strip()
+
+def _item_name(s: str) -> str:
+    # first line without trailing skill parens
+    line = _first_line(s)
+    line = re.sub(r"\s*\([^)]*\)\s*$", "", line).strip(" ,")
+    return line or line
+
+def _rank_items(items: list[str], jd_text: str, item_type: str, topn: int = 6):
+    """
+    Rank items by relevance to the JD using hybrid (semantic + lexical) max-sim.
+    Returns the top-N items (original strings), their names, and scores.
+    """
+    if not items:
+        return [], [], []
+
+    # Represent each item as name + full text to give the scorer context
+    texts = []
+    names = []
+    for it in items:
+        nm = _item_name(it) or "Untitled"
+        names.append(nm)
+        texts.append(f"{nm}. {it}")
+
+    # Hybrid score (uses SentenceTransformer if available; TF-IDF otherwise)
+    scores, _ = _hybrid_scores(texts, jd_text, w_sem=0.65)
+    order = list(np.argsort(-scores))[:max(1, min(topn, len(items)))]
+
+    ranked_items = [items[i] for i in order]
+    ranked_names = [names[i] for i in order]
+    ranked_scores = [float(scores[i]) for i in order]
+
+    print(f"🎯 Top {item_type.title()} by JD score:")
+    for nm, sc in zip(ranked_names, ranked_scores):
+        print(f"   - {nm}: {sc:.3f}")
+
+    return ranked_items, ranked_names, ranked_scores
 
 def _is_bullet(p: Paragraph) -> bool:
     """Detect bullets by style, numbering, or literal bullet/dash prefix."""
@@ -631,27 +669,33 @@ def _generate_tailored_points(items, job_description, item_type):
         print(f"No {item_type}s provided for tailoring.")
         return []
 
+    # ✅ Preselect the most relevant items for THIS JD
+    candidates, cand_names, cand_scores = _rank_items(items, job_description, item_type, topn=6)
+    # If ranking failed for some reason, fall back to the original list
+    pool = candidates if candidates else items
+
     prompt = f"""
-You are a senior software-engineering resume writer optimizing for ATS. Select the most professional, outstanding, and impactful {item_type}s.
+You are a senior software-engineering resume writer optimizing for ATS.
+
+ONLY consider these {item_type}s (ranked by JD relevance, highest first):
+{pool}
 
 Return a STRICT JSON array (no prose, no markdown). Each element:
 {{
   "name": "<{item_type} name>",
-  "skills": ["<tech/skill 1>", "..."],             // 5–10 items; only real tech from the item/JD
-  "bullets": ["<b1>", "<b2>", "<b3>", "<b4>"]      // 3–4 bullets allowed (send 3–4)
+  "skills": ["<tech/skill 1>", "..."],             // 5–10 real tech from the item/JD
+  "bullets": ["<b1>", "<b2>", "<b3>", "<b4>"]      // 2–3 bullets (send 2–3), sometimes 2 sometimes 3
 }}
 
 Bullet rules (VERY IMPORTANT):
 - Action-first verbs (Designed, Implemented, Optimized, Architected, Shipped, Automated, Refactored, Scaled).
-- 18–40 words; clear problem → approach → impact with credible metrics when implied (%, pXX latency, QPS, users, cost, memory/CPU).
-- Use precise SWE terms: REST/GraphQL endpoints, data modeling, indexing, transactions/ACID, caching (Redis), queues/streams, batch vs. streaming, concurrency, profiling, CI/CD, containerization, IaC, monitoring/alerting.
+- 18–40 words; clear problem → approach → impact; credible metrics if implied (%, pXX latency, QPS, users, cost, memory/CPU).
+- Use precise SWE terms: REST/GraphQL endpoints, indexing, ACID/transactions, caching (Redis), queues/streams, batch vs streaming, concurrency, profiling, CI/CD, containerization, IaC, monitoring/alerting.
 - Name technologies naturally (frameworks, DBs, cloud, testing, pipelines). No emojis. No fabrication.
+- Choose the BEST 3 {item_type}s for the JD from the list above. Do not invent new ones.
 
 Job Description:
 {job_description}
-
-Candidate {item_type.title()}s (raw list):
-{items}
 
 Output JSON ONLY.
 """.strip()
@@ -667,8 +711,8 @@ Output JSON ONLY.
             name = (obj.get("name") or "").strip()
             skills = [s.strip() for s in (obj.get("skills") or []) if s.strip()][:10]
             bullets = [b.strip().strip("-•–— ").strip() for b in (obj.get("bullets") or [])]
-            bullets = [b for b in bullets if b][:4]    # ⟵ up to 4
-            if name and len(bullets) >= 2:             # ⟵ at least 2
+            bullets = [b for b in bullets if b][:4]
+            if name and len(bullets) >= 2:
                 cleaned.append({"name": name, "skills": skills, "bullets": bullets})
 
         print(f"✅ Parsed Tailored {item_type.title()}s (JSON): {cleaned}")
@@ -676,7 +720,6 @@ Output JSON ONLY.
     except Exception as e:
         print(f"⚠️ JSON parse failed for {item_type}s: {e}\nRaw:\n{response.text if 'response' in locals() else ''}")
         return []
-
 
 def _parse_listy_text(output: str, item_type: str):
     lines = output.splitlines()
