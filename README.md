@@ -13,37 +13,37 @@ To run this project, you need the following installed:
 - Supabase account
   - Run this sql code in the sql editor if you're first getting started:
 ```bash
-create table public.user_jobs (
-  id serial not null,
-  user_id uuid null,
-  job_name character varying(500) not null,
-  company character varying(200) not null,
-  location character varying(200) null,
-  location_type character varying(50) null,
-  job_type character varying(100) null,
-  posting_date character varying(100) null,
-  application_link text not null,
-  description text null,
-  source character varying(50) null default 'linkedin'::character varying,
-  scraped_at timestamp with time zone null default now(),
-  created_at timestamp with time zone null default now(),
-  application_status character varying(20) null default 'not_applied'::character varying,
-  status_updated_at timestamp with time zone null default now(),
-  constraint user_jobs_pkey primary key (id),
-  constraint user_jobs_application_link_key unique (application_link),
-  constraint user_jobs_user_id_application_link_key unique (user_id, application_link),
-  constraint user_jobs_user_id_fkey foreign KEY (user_id) references auth.users (id) on delete CASCADE
-) TABLESPACE pg_default;
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
-create index IF not exists idx_user_jobs_user_id on public.user_jobs using btree (user_id) TABLESPACE pg_default;
-
-create index IF not exists idx_user_jobs_application_link on public.user_jobs using btree (application_link) TABLESPACE pg_default;
-
-create index IF not exists idx_user_jobs_company_name on public.user_jobs using btree (company, job_name) TABLESPACE pg_default;
-
-create index IF not exists idx_user_jobs_status on public.user_jobs using btree (application_status) TABLESPACE pg_default;
-
-create index IF not exists idx_user_jobs_status_updated on public.user_jobs using btree (status_updated_at) TABLESPACE pg_default;
+CREATE TABLE public.Users (
+  id bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  user_uuid uuid DEFAULT gen_random_uuid(),
+  Experiences jsonb,
+  Projects jsonb,
+  Skills jsonb,
+  CONSTRAINT Users_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.user_jobs (
+  id integer NOT NULL DEFAULT nextval('user_jobs_id_seq'::regclass),
+  user_id uuid,
+  job_name character varying NOT NULL,
+  company character varying NOT NULL,
+  location character varying,
+  location_type character varying,
+  job_type character varying,
+  posting_date character varying,
+  application_link text NOT NULL UNIQUE,
+  description text,
+  source character varying DEFAULT 'linkedin'::character varying,
+  scraped_at timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  application_status character varying DEFAULT 'not_applied'::character varying,
+  status_updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT user_jobs_pkey PRIMARY KEY (id),
+  CONSTRAINT user_jobs_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
 ```
     
 - `.env` files for both the backend and frontend
@@ -114,4 +114,5 @@ python app.py
 cd ../frontend_site
 npm start
 ```
+
 
